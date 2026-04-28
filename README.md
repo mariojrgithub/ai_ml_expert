@@ -18,14 +18,19 @@ A local-first engineering copilot starter built with:
 ai-ml-expert/
 ├── java-api/
 ├── python-agent/
+├── streamlit-ui/
 ├── .env.example
-├── docker-compose.yml
+├── docker-compose.yml          ← base stack (no Ollama service)
+├── docker-compose.gpu.yml      ← adds Ollama with NVIDIA GPU (Windows)
+├── docker-compose.cpu.yml      ← adds Ollama CPU-only (Mac Docker)
+├── Makefile                    ← deployment shortcuts
 └── README.md
 ```
 
-The project includes both:
+The project includes:
 - `java-api/` for the Spring Boot gateway
 - `python-agent/` for the Python agent service
+- `streamlit-ui/` for the chat UI
 
 ---
 
@@ -61,8 +66,41 @@ The Python agent exposes endpoints such as:
 Before running locally, install:
 
 - **Docker Desktop** (or Docker Engine + Compose)
-- enough disk space to pull Ollama models
+- enough disk space to pull Ollama models (~8–15 GB depending on models)
 - optionally, **Python 3.11+** and **Java 21** if you want to run services outside Docker
+
+**Windows + NVIDIA GPU users** additionally need:
+- NVIDIA driver installed
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (`nvidia-ctk`)
+- Docker Desktop with GPU support enabled
+
+**Mac local Ollama users** additionally need:
+- [Ollama for macOS](https://ollama.com/download) installed and running (`ollama serve`)
+
+---
+
+## Deployment modes
+
+This project supports three deployment modes selected by a single `make` command:
+
+| Mode | Who | Command |
+|---|---|---|
+| Windows + NVIDIA GPU | Ollama runs in Docker with GPU passthrough | `make up-gpu` |
+| Mac + Docker CPU | Ollama runs in Docker, no GPU | `make up-mac-docker` |
+| Mac + Local Ollama | Ollama runs natively on your Mac | `make up-mac-local` |
+
+The Makefile wraps the correct compose override file for each mode. You can also run the compose commands directly if you don't have `make`:
+
+```bash
+# Windows GPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+
+# Mac Docker CPU
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+
+# Mac Local Ollama
+docker compose up --build
+```
 
 ---
 
@@ -74,18 +112,18 @@ Copy the environment template if you want a local `.env`:
 cp .env.example .env
 ```
 
-The template includes MongoDB, Ollama, and optional MCP settings such as:
-- `MONGO_URI`
-- `MONGO_DB`
-- `OLLAMA_BASE_URL`
-- `GENERAL_MODEL`
-- `CODE_MODEL`
-- `EMBEDDING_MODEL`
+The key variable to set based on your deployment mode is `OLLAMA_BASE_URL`:
+
+| Mode | Value |
+|---|---|
+| Ollama in Docker (GPU or CPU) | `http://ollama:11434` |
+| Mac local Ollama | `http://host.docker.internal:11434` *(default when unset)* |
+
+Other available settings:
+- `MONGO_URI`, `MONGO_DB`
+- `GENERAL_MODEL`, `CODE_MODEL`, `EMBEDDING_MODEL`
 - `WEB_SEARCH_ENABLED`
-- `MCP_TRANSPORT`
-- `MCP_SERVER_COMMAND`
-- `MCP_SERVER_ARGS`
-- `MCP_WEB_SEARCH_TOOL`
+- `MCP_TRANSPORT`, `MCP_SERVER_COMMAND`, `MCP_SERVER_ARGS`, `MCP_WEB_SEARCH_TOOL`
 
 The Python config reads these values using `pydantic-settings`.
 
@@ -93,42 +131,60 @@ The Python config reads these values using `pydantic-settings`.
 
 ## Run the full stack locally with Docker
 
-### 1) Start Ollama first
+### Step 1 — Choose your deployment mode and start the stack
 
-Start only the Ollama container first:
-
+**Windows + NVIDIA GPU:**
 ```bash
-docker compose up -d ollama
+make up-gpu
 ```
 
-### 2) Pull the required Ollama models
-
-Pull these models into Ollama:
-
+**Mac + Docker (CPU-only Ollama):**
 ```bash
-docker exec -it engineering-copilot-v6-ollama ollama pull llama3.1:8b
-docker exec -it engineering-copilot-v6-ollama ollama pull qwen2.5-coder:7b
-docker exec -it engineering-copilot-v6-ollama ollama pull embeddinggemma
+make up-mac-docker
 ```
 
-These model names match the configuration expected by the Python service.
+**Mac + Local Ollama (Ollama running natively):**
 
-### 3) Start the full stack
-
-Now start everything:
-
+First ensure Ollama is running on your Mac:
 ```bash
-docker compose up --build
+ollama serve   # or open the Ollama.app
+```
+
+Then start the stack:
+```bash
+make up-mac-local
 ```
 
 The compose stack starts:
 - `api` (Spring Boot gateway)
 - `python-agent`
 - `mongo`
-- `ollama`
-- `streamlit-ui` (chat UI)
+- `ollama` *(only in GPU and Mac-Docker modes)*
+- `streamlit-ui` (chat UI at `http://localhost:8501`)
 
-### 4) Seed sample internal documents
+### Step 2 — Pull the required Ollama models
+
+**If Ollama is running inside Docker** (GPU or Mac-Docker mode):
+
+```bash
+make pull-models
+```
+
+Or manually:
+```bash
+docker exec -it engineering-copilot-v6-ollama ollama pull llama3.1:8b
+docker exec -it engineering-copilot-v6-ollama ollama pull qwen2.5-coder:7b
+docker exec -it engineering-copilot-v6-ollama ollama pull embeddinggemma
+```
+
+**If Ollama is running locally on your Mac**, pull models directly on the host:
+```bash
+ollama pull llama3.1:8b
+ollama pull qwen2.5-coder:7b
+ollama pull embeddinggemma
+```
+
+### Step 3 — Seed sample internal documents
 
 After the stack is up:
 
@@ -138,7 +194,7 @@ curl -X POST http://localhost:8000/admin/seed
 
 This loads the sample internal documents into MongoDB.
 
-### 5) Generate embeddings for the sample chunks
+### Step 4 — Generate embeddings for the sample chunks
 
 ```bash
 curl -X POST http://localhost:8000/admin/reindex
@@ -146,7 +202,7 @@ curl -X POST http://localhost:8000/admin/reindex
 
 This generates embeddings and prepares the RAG dataset.
 
-### 6) Test chat through the Java gateway
+### Step 5 — Test chat through the Java gateway
 
 Send a request through the Spring Boot gateway:
 
@@ -167,7 +223,7 @@ By default, the project runs on:
 - **Spring Boot API**: `http://localhost:8080`
 - **Python agent**: `http://localhost:8000`
 - **MongoDB**: `mongodb://localhost:27017`
-- **Ollama**: `http://localhost:11434`
+- **Ollama**: `http://localhost:11434` *(Docker-managed modes only; in Mac local mode Ollama is on the host)*
 - **Streamlit UI**: `http://localhost:8501`
 
 ---
@@ -335,10 +391,16 @@ The project includes tests under:
 ## Common issues
 
 ### Ollama model not found
-Make sure you pulled:
-- `llama3.1:8b`
-- `qwen2.5-coder:7b`
-- `embeddinggemma`
+Make sure you pulled all three required models. For Docker-managed Ollama:
+```bash
+make pull-models
+```
+For local Mac Ollama:
+```bash
+ollama pull llama3.1:8b
+ollama pull qwen2.5-coder:7b
+ollama pull embeddinggemma
+```
 
 ### No grounded answers
 Run:
@@ -347,6 +409,13 @@ Run:
 curl -X POST http://localhost:8000/admin/seed
 curl -X POST http://localhost:8000/admin/reindex
 ```
+
+### Python agent can't reach Ollama (Mac local mode)
+Ensure Ollama is running on your host before starting the stack:
+```bash
+ollama serve
+```
+The `python-agent` container connects to `host.docker.internal:11434`, which maps to your Mac's localhost. If you're on Linux, the `extra_hosts` entry in `docker-compose.yml` handles this automatically.
 
 ### Gateway returns errors
 Make sure:
@@ -360,14 +429,24 @@ Leave MCP disabled until you have a valid MCP server configured.
 
 ## Minimal run order
 
-If you just want the shortest possible startup flow:
+If you just want the shortest possible startup flow, pick your mode:
 
+**Mac + Local Ollama (fastest for Mac users):**
 ```bash
-docker compose up -d ollama
-docker exec -it engineering-copilot-v6-ollama ollama pull llama3.1:8b
-docker exec -it engineering-copilot-v6-ollama ollama pull qwen2.5-coder:7b
-docker exec -it engineering-copilot-v6-ollama ollama pull embeddinggemma
-docker compose up --build
+ollama serve
+ollama pull llama3.1:8b && ollama pull qwen2.5-coder:7b && ollama pull embeddinggemma
+make up-mac-local
+curl -X POST http://localhost:8000/admin/seed
+curl -X POST http://localhost:8000/admin/reindex
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo","message":"What are the key CI/CD guardrails?"}'
+```
+
+**Windows GPU or Mac Docker:**
+```bash
+make up-gpu        # or: make up-mac-docker
+make pull-models
 curl -X POST http://localhost:8000/admin/seed
 curl -X POST http://localhost:8000/admin/reindex
 curl -X POST http://localhost:8080/api/chat \

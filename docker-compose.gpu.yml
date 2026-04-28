@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# GPU OVERRIDE – Windows + NVIDIA GPU
+#
+# Adds the Ollama container with full NVIDIA GPU passthrough and wires
+# python-agent to reach it via the internal Docker network.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#   -- or --
+#   make up-gpu
+#
+# Requirements:
+#   - NVIDIA GPU + driver installed on the Windows host
+#   - NVIDIA Container Toolkit installed (nvidia-ctk)
+#   - Docker Desktop with "GPU support" enabled
+# ---------------------------------------------------------------------------
+
+version: "3.9"
+
+services:
+  python-agent:
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      - ollama
+
+  ollama:
+    container_name: engineering-copilot-v6-ollama
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama:

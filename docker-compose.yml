@@ -1,4 +1,17 @@
 version: "3.9"
+
+# ---------------------------------------------------------------------------
+# BASE COMPOSE – no Ollama service defined here.
+# Ollama is added via override files depending on your platform:
+#
+#   Windows + NVIDIA GPU   →  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#   Mac     + Docker CPU   →  docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+#   Mac     + Local Ollama →  docker compose up --build
+#                              (requires Ollama running natively: `ollama serve`)
+#
+# Or use the Makefile shortcuts: make up-gpu | make up-mac-docker | make up-mac-local
+# ---------------------------------------------------------------------------
+
 services:
   api:
     container_name: engineering-copilot-v6-api
@@ -19,19 +32,26 @@ services:
     environment:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB: engineering_copilot
-      OLLAMA_BASE_URL: http://ollama:11434
-      GENERAL_MODEL: llama3.1:8b
-      CODE_MODEL: qwen2.5-coder:7b
-      EMBEDDING_MODEL: embeddinggemma
-      WEB_SEARCH_ENABLED: "false"
-      MCP_TRANSPORT: stdio
-      MCP_SERVER_COMMAND: ""
-      MCP_SERVER_ARGS: ""
-      MCP_WEB_SEARCH_TOOL: web_search
+      # When running without an Ollama container (Mac local mode), this default
+      # points to the host machine where `ollama serve` is running.
+      # Override files (docker-compose.gpu.yml / docker-compose.cpu.yml) set
+      # this to http://ollama:11434 when Ollama runs inside Docker instead.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      GENERAL_MODEL: ${GENERAL_MODEL:-llama3.1:8b}
+      CODE_MODEL: ${CODE_MODEL:-qwen2.5-coder:7b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-stdio}
+      MCP_SERVER_COMMAND: ${MCP_SERVER_COMMAND:-}
+      MCP_SERVER_ARGS: ${MCP_SERVER_ARGS:-}
+      MCP_WEB_SEARCH_TOOL: ${MCP_WEB_SEARCH_TOOL:-web_search}
       AGENT_PORT: 8000
     depends_on:
       - mongo
-      - ollama
+    # host.docker.internal resolves automatically on Docker Desktop (Mac/Windows).
+    # The extra_hosts line below makes it work on Linux hosts as well.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
 
@@ -41,21 +61,6 @@ services:
     ports:
       - "27017:27017"
 
-  ollama:
-    container_name: engineering-copilot-v6-ollama
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   streamlit-ui:
     build: ./streamlit-ui
     container_name: engineering-copilot-v6-streamlit-ui
@@ -64,6 +69,3 @@ services:
     depends_on:
       - api
       - python-agent
-
-volumes:
-  ollama:

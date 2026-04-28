@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------------------
+# CPU OVERRIDE – Mac (or any host) using Docker-managed Ollama, no GPU
+#
+# Adds the Ollama container in CPU-only mode and wires python-agent to reach
+# it via the internal Docker network.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+#   -- or --
+#   make up-mac-docker
+#
+# Note: CPU-only inference is slower; suitable for development and testing.
+# ---------------------------------------------------------------------------
+
+version: "3.9"
+
+services:
+  python-agent:
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      - ollama
+
+  ollama:
+    container_name: engineering-copilot-v6-ollama
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    # No `deploy.resources.reservations` block → CPU-only mode
+
+volumes:
+  ollama:
