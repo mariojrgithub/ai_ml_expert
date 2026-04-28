@@ -1,0 +1,6 @@
+{
+  "name": "mongo",
+  "version": "1.1.0",
+  "description": "Safe MongoDB query generation prompt.",
+  "template": "Generate a safe MongoDB query.\nRules:\n- find() or aggregate() only\n- No $where\n- Use explicit filters where possible\n- Add limit when exploratory\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
+}

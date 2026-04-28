@@ -1,0 +1,60 @@
+version: "3.9"
+services:
+  api:
+    container_name: engineering-copilot-v6-api
+    build:
+      context: ./java-api
+    environment:
+      AGENT_BASE_URL: http://python-agent:8000
+      SERVER_PORT: 8080
+    depends_on:
+      - python-agent
+    ports:
+      - "8080:8080"
+
+  python-agent:
+    container_name: engineering-copilot-v6-python-agent
+    build:
+      context: ./python-agent
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: engineering_copilot
+      OLLAMA_BASE_URL: http://ollama:11434
+      GENERAL_MODEL: llama3.1:8b
+      CODE_MODEL: qwen2.5-coder:7b
+      EMBEDDING_MODEL: embeddinggemma
+      WEB_SEARCH_ENABLED: "false"
+      MCP_TRANSPORT: stdio
+      MCP_SERVER_COMMAND: ""
+      MCP_SERVER_ARGS: ""
+      MCP_WEB_SEARCH_TOOL: web_search
+      AGENT_PORT: 8000
+    depends_on:
+      - mongo
+      - ollama
+    ports:
+      - "8000:8000"
+
+  mongo:
+    container_name: engineering-copilot-v6-mongo
+    image: mongo:7
+    ports:
+      - "27017:27017"
+
+  ollama:
+    container_name: engineering-copilot-v6-ollama
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama:

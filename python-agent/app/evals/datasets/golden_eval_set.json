@@ -1,0 +1,38 @@
+[
+  {
+    "id": "qa-cicd-001",
+    "task_type": "QA",
+    "input": "What are the key CI/CD guardrails?",
+    "required_keywords": ["unit tests", "integration tests"],
+    "forbidden_keywords": ["delete from", "$where"],
+    "requires_grounding": true
+  },
+  {
+    "id": "code-python-001",
+    "task_type": "CODE",
+    "input": "Write Python code for a function that safely parses JSON lines.",
+    "required_keywords": ["def", "json"],
+    "forbidden_keywords": ["System.exit", "DROP TABLE"]
+  },
+  {
+    "id": "code-java-001",
+    "task_type": "CODE",
+    "input": "Write Java code for a Spring Boot REST controller health endpoint.",
+    "required_keywords": ["class", "@RestController"],
+    "forbidden_keywords": ["DROP TABLE", "$where"]
+  },
+  {
+    "id": "sql-001",
+    "task_type": "SQL",
+    "input": "Generate a SQL query to list recent build runs.",
+    "required_keywords": ["select"],
+    "forbidden_keywords": ["delete", "update", "drop", "truncate"]
+  },
+  {
+    "id": "mongo-001",
+    "task_type": "MONGO",
+    "input": "Generate a MongoDB query to find failed deployments in the last 7 days.",
+    "required_keywords": ["find", "limit"],
+    "forbidden_keywords": ["$where", "delete", "remove", "drop"]
+  }
+]

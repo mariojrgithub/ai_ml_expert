@@ -1,0 +1,81 @@
+from typing import Any, Dict
+from langchain_core.messages import HumanMessage
+from .llm import general_llm, code_llm
+from .prompt_registry import default_prompt_registry
+from .rag import retrieve_context, context_to_text
+from .router import classify_intent, plan_context
+from .validators import validate_code, validate_mongo, validate_sql
+from .web import external_context_to_text, run_web_search
+from .tracing import timed_node
+from .citations import format_citations
+
+PROMPTS = default_prompt_registry()
+
+def route_intent_node(state: Dict[str, Any]) -> Dict[str, Any]: return classify_intent(state['user_input'])
+def context_plan_node(state: Dict[str, Any]) -> Dict[str, Any]: return plan_context(state['user_input'], state['intent'])
+def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    docs = retrieve_context(state['user_input']) if state.get('needs_rag', True) else []
+    citations = [{'source': d.get('source', 'unknown'),'title': d.get('title', 'unknown'),'snippet': d.get('text', '')[:220],'similarity': d.get('similarity', 0.0),'rerank_score': d.get('rerank_score', 0.0)} for d in docs]
+    return {'retrieved_docs': docs, 'citations': citations, 'retrieval_stats': {'doc_count': len(docs)}}
+def web_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    results = run_web_search(state['user_input']) if state.get('needs_web_search', False) else []
+    citations = list(state.get('citations', [])) + [{'source': r.get('source', 'unknown'),'title': r.get('title', 'unknown'),'snippet': r.get('snippet', '')} for r in results]
+    return {'external_results': results, 'citations': citations, 'external_stats': {'result_count': len(results)}}
+def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    intent = state['intent']; domain = state.get('domain'); question = state['user_input']
+    context_docs = state.get('retrieved_docs', []); context = context_to_text(context_docs); external_context = external_context_to_text(state.get('external_results', []))
+    prompt_name = 'qa'; model_name = 'general'
+    if intent == 'QA':
+        prompt_name = 'qa'; model_name = 'general'
+        if not context_docs:
+            return {'draft_output': 'I could not find sufficient internal context to answer this confidently.', 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': False}
+        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
+        text = general_llm().invoke([HumanMessage(content=prompt)]).content
+        return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': True}
+    elif intent == 'SQL':
+        prompt_name = 'sql'; model_name = 'general'
+        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context})
+        text = general_llm().invoke([HumanMessage(content=prompt)]).content
+    elif intent == 'MONGO':
+        prompt_name = 'mongo'; model_name = 'general'
+        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context})
+        text = general_llm().invoke([HumanMessage(content=prompt)]).content
+    elif intent == 'CODE' and domain == 'java':
+        prompt_name = 'code_java'; model_name = 'code'
+        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
+        text = code_llm().invoke([HumanMessage(content=prompt)]).content
+    else:
+        prompt_name = 'code_python'; model_name = 'code'
+        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
+        text = code_llm().invoke([HumanMessage(content=prompt)]).content
+    return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': bool(context_docs) if intent == 'QA' else True}
+def validate_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    intent = state['intent']; text = state.get('draft_output') or ''; warnings = list(state.get('warnings', []))
+    if intent == 'SQL': validated, new_warnings = validate_sql(text)
+    elif intent == 'MONGO': validated, new_warnings = validate_mongo(text)
+    elif intent == 'CODE': validated, new_warnings = validate_code(text, 'java' if state.get('domain') == 'java' else 'python')
+    else: validated, new_warnings = text, []
+    warnings.extend(new_warnings)
+    if intent == 'QA' and not state.get('grounded', False): warnings.append('Grounded internal context not available for QA response.')
+    if state.get('needs_web_search') and not state.get('external_results'): warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
+    final_answer = validated
+    if intent == 'QA' and state.get('grounded', False):
+        final_answer = validated + format_citations(state.get('citations', []))
+    return {'validated_output': final_answer, 'warnings': warnings}
+
+def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
+    state: Dict[str, Any] = {'session_id': session_id, 'user_input': user_input, 'warnings': [], 'trace': []}
+    for name, fn in [('route_intent', route_intent_node), ('context_plan', context_plan_node), ('retrieve', retrieve_node), ('web_search', web_search_node), ('generate', generate_node), ('validate', validate_node)]:
+        timed_node(name, fn, state)
+    state['run_metadata'] = {
+        'session_id': session_id,
+        'intent': state.get('intent'),
+        'domain': state.get('domain'),
+        'prompt_name': state.get('prompt_name'),
+        'prompt_version': state.get('prompt_version'),
+        'model_name': state.get('model_name'),
+        'retrieved_doc_count': state.get('retrieval_stats', {}).get('doc_count', 0),
+        'external_result_count': state.get('external_stats', {}).get('result_count', 0),
+        'grounded': state.get('grounded', False),
+    }
+    return state

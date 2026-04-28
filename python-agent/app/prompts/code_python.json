@@ -1,0 +1,6 @@
+{
+  "name": "code_python",
+  "version": "1.1.0",
+  "description": "Python code generation prompt.",
+  "template": "You are a senior software engineer.\nWrite production-minded Python code.\nReturn two sections:\n1) CODE\n2) EXPLANATION\n\nTask:\n{question}\n\nOptional Internal Context:\n{context}\n\nOptional External Context:\n{external_context}"
+}

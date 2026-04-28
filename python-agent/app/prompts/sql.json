@@ -1,0 +1,6 @@
+{
+  "name": "sql",
+  "version": "1.1.0",
+  "description": "Read-only SQL generation prompt.",
+  "template": "Generate a READ-ONLY SQL query.\nRules:\n- SELECT only\n- Explicit tables and filters\n- Avoid SELECT * unless explicitly needed\n- Add a short note if the schema is ambiguous\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
+}
