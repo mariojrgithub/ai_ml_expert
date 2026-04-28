@@ -26,9 +26,17 @@ def eval_runs_collection() -> Collection:
     return db["eval_runs"]
 
 
+def book_chunks_collection() -> Collection:
+    return db["book_chunks"]
+
+
 def ensure_indexes() -> None:
     documents_collection().create_index([("title", TEXT), ("content", TEXT), ("domain", TEXT)])
     chunks_collection().create_index([("title", TEXT), ("text", TEXT), ("domain", TEXT)])
+    book_chunks_collection().create_index([("title", TEXT), ("text", TEXT)], name="book_text_idx")
+    book_chunks_collection().create_index(
+        [("book_id", 1), ("chunk_index", 1)], unique=True, name="book_chunk_idx"
+    )
     executions_collection().create_index("createdAt")
     eval_runs_collection().create_index("createdAt")
 
@@ -104,7 +112,10 @@ def set_chunk_embedding(chunk_id: Any, embedding: List[float]) -> None:
 
 
 def all_embedded_chunks() -> List[Dict[str, Any]]:
-    return list(chunks_collection().find({"embedding": {"$type": "array"}}))
+    """Return all embedded chunks from both the internal playbook and book_chunks collections."""
+    playbook = list(chunks_collection().find({"embedding": {"$type": "array"}}))
+    books = list(book_chunks_collection().find({"embedding": {"$type": "array"}}))
+    return playbook + books
 
 
 def save_execution(payload: Dict[str, Any]) -> str:
