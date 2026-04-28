@@ -126,6 +126,7 @@ The compose stack starts:
 - `python-agent`
 - `mongo`
 - `ollama`
+- `streamlit-ui` (chat UI)
 
 ### 4) Seed sample internal documents
 
@@ -167,6 +168,7 @@ By default, the project runs on:
 - **Python agent**: `http://localhost:8000`
 - **MongoDB**: `mongodb://localhost:27017`
 - **Ollama**: `http://localhost:11434`
+- **Streamlit UI**: `http://localhost:8501`
 
 ---
 

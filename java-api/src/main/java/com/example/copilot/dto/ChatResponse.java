@@ -6,7 +6,9 @@ import java.util.Map;
 public record ChatResponse(
         String executionId,
         String intent,
-        String answer,
+        String format,
+        String content,
+        String language,
         List<String> warnings,
         List<Map<String, Object>> citations
 ) {

@@ -108,12 +108,12 @@ def all_embedded_chunks() -> List[Dict[str, Any]]:
 
 
 def save_execution(payload: Dict[str, Any]) -> str:
-    payload["createdAt"] = datetime.now(timezone.utc)
-    result = executions_collection().insert_one(payload)
+    doc = {**payload, "createdAt": datetime.now(timezone.utc)}
+    result = executions_collection().insert_one(doc)
     return str(result.inserted_id)
 
 
 def save_eval_run(payload: Dict[str, Any]) -> str:
-    payload["createdAt"] = datetime.now(timezone.utc)
-    result = eval_runs_collection().insert_one(payload)
+    doc = {**payload, "createdAt": datetime.now(timezone.utc)}
+    result = eval_runs_collection().insert_one(doc)
     return str(result.inserted_id)

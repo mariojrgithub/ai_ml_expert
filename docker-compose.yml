@@ -56,5 +56,14 @@ services:
               count: all
               capabilities: [gpu]
 
+  streamlit-ui:
+    build: ./streamlit-ui
+    container_name: engineering-copilot-v6-streamlit-ui
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+      - python-agent
+
 volumes:
   ollama:

@@ -4,45 +4,72 @@ import com.example.copilot.dto.ChatResponse;
 import com.example.copilot.service.AgentGatewayService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(ChatController.class)
+@WebFluxTest(ChatController.class)
 class ChatControllerTest {
 
     @Autowired
-    private MockMvc mockMvc;
+    private WebTestClient webTestClient;
 
     @MockBean
     private AgentGatewayService agentGatewayService;
 
     @Test
-    void shouldForwardChatRequest() throws Exception {
+    void shouldForwardChatRequest() {
         when(agentGatewayService.chat(any()))
                 .thenReturn(new ChatResponse(
                         "exec-1",
                         "CODE",
-                        "CODE\nprint('hi')",
+                        "code",
+                        "print('hi')",
+                        "python",
                         List.of(),
                         List.of()
                 ));
 
-        mockMvc.perform(
-                    post("/api/chat")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sessionId\":\"s1\",\"message\":\"write python code\"}")
-                )
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.executionId").value("exec-1"))
-                .andExpect(jsonPath("$.intent").value("CODE"));
+        webTestClient.post().uri("/api/chat")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"sessionId\":\"s1\",\"message\":\"write python code\"}")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.executionId").isEqualTo("exec-1")
+                .jsonPath("$.intent").isEqualTo("CODE")
+                .jsonPath("$.content").isEqualTo("print('hi')")
+                .jsonPath("$.format").isEqualTo("code");
+    }
+
+    @Test
+    void shouldStreamChatResponse() {
+        when(agentGatewayService.chatStream(any()))
+                .thenReturn(Flux.just(
+                        "{\"type\":\"meta\",\"format\":\"markdown\",\"language\":null,\"intent\":\"QA\"}",
+                        "{\"type\":\"delta\",\"content\":\"Hello\"}",
+                        "{\"type\":\"done\",\"warnings\":[],\"citations\":[]}"
+                ));
+
+        webTestClient.post().uri("/api/chat/stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"sessionId\":\"s1\",\"message\":\"What are CI/CD guardrails?\"}")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM)
+                .returnResult(String.class)
+                .getResponseBody()
+                .as(body -> {
+                    var frames = body.collectList().block();
+                    assert frames != null && frames.size() == 3;
+                    return frames;
+                });
     }
 }
