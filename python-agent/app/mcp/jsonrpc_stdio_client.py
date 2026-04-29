@@ -27,7 +27,7 @@ class JsonRpcStdioMcpClient:
             await self.process.wait()
 
     async def initialize(self) -> Dict[str, Any]:
-        return await self.request(
+        result = await self.request(
             "initialize",
             {
                 "protocolVersion": "2025-03-26",
@@ -38,6 +38,20 @@ class JsonRpcStdioMcpClient:
                 },
             },
         )
+        # MCP spec requires sending this notification after the initialize response
+        # so the server transitions from initializing → operational state.
+        await self.notify("notifications/initialized", {})
+        return result
+
+    async def notify(self, method: str, params: Dict[str, Any]) -> None:
+        """Send a JSON-RPC notification (no id, no response expected)."""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }
+        self.process.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+        await self.process.stdin.drain()
 
     async def list_tools(self) -> Dict[str, Any]:
         return await self.request("tools/list", {})

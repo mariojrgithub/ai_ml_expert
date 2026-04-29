@@ -16,6 +16,8 @@ services:
   python-agent:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Mount .env so `docker mcp gateway run --secrets /.env` can read it inside the container
+      - ./.env:/.env:ro
     container_name: engineering-copilot-v6-python-agent
     build:
       context: ./python-agent
