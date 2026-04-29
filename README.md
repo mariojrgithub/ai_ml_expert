@@ -19,6 +19,9 @@ ai-ml-expert/
 ├── java-api/
 ├── python-agent/
 ├── streamlit-ui/
+├── notebooks/
+│   └── mongo_upload.ipynb   ← seeds books into MongoDB for RAG
+├── books/                   ← PDF/text books to ingest via the notebook
 ├── .env.example
 ├── docker-compose.yml          ← base stack (no Ollama service)
 ├── docker-compose.gpu.yml      ← adds Ollama with NVIDIA GPU (Windows)
@@ -55,9 +58,14 @@ The Python agent exposes endpoints such as:
 - `GET /admin/prompts`
 - `POST /admin/seed`
 - `POST /admin/reindex`
-- `POST /admin/evals/run`
+- `POST /admin/evals/run`  *(runs asynchronously in the background)*
 - `GET /admin/evals/reports`
 - `POST /agent/chat`
+- `POST /agent/chat/stream`  *(NDJSON token stream)*
+
+The Java gateway exposes:
+- `POST /api/chat`  *(proxies to `/agent/chat`)*
+- `POST /api/chat/stream`  *(proxies to `/agent/chat/stream`, re-wrapped as SSE)*
 
 ---
 
@@ -174,14 +182,14 @@ Or manually:
 ```bash
 docker exec -it engineering-copilot-v6-ollama ollama pull llama3.1:8b
 docker exec -it engineering-copilot-v6-ollama ollama pull qwen2.5-coder:7b
-docker exec -it engineering-copilot-v6-ollama ollama pull embeddinggemma
+docker exec -it engineering-copilot-v6-ollama ollama pull nomic-embed-text
 ```
 
 **If Ollama is running locally on your Mac**, pull models directly on the host:
 ```bash
 ollama pull llama3.1:8b
 ollama pull qwen2.5-coder:7b
-ollama pull embeddinggemma
+ollama pull nomic-embed-text
 ```
 
 ### Step 3 — Seed sample internal documents
@@ -200,7 +208,17 @@ This loads the sample internal documents into MongoDB.
 curl -X POST http://localhost:8000/admin/reindex
 ```
 
-This generates embeddings and prepares the RAG dataset.
+This generates embeddings using `nomic-embed-text` and prepares the RAG dataset.
+
+### Step 5 — (Optional) Seed books for RAG
+
+Open `notebooks/mongo_upload.ipynb` in VS Code or Jupyter. Place your PDF/text books in the
+`books/` folder and run the notebook to chunk, embed, and upload them into the `book_chunks`
+collection. The notebook uses the same `nomic-embed-text` model configured in the agent.
+
+> **Note:** If you change the embedding model after books have been ingested, you must
+> re-run the notebook to regenerate all embeddings in the new vector space, then call
+> `POST /admin/reindex` to regenerate the internal playbook embeddings as well.
 
 ### Step 5 — Test chat through the Java gateway
 
@@ -358,11 +376,15 @@ A good document shape is:
   "text": "Prefer static factory methods to constructors...",
   "embedding": [0.1, -0.2, 0.3],
   "tags": ["java", "best-practices"],
-  "source_type": "book"
+  "source_type": "book",
+  "source": "book/book-effective-java-001",
+  "domain": "java"
 }
 ```
 
-If you have the notebook we created for seeding books, use that to load `.txt`, `.md`, or `.pdf` files into MongoDB.
+The `source` field is required — it is rendered by the retrieval layer and passed to the LLM
+so it can cite its sources. The `domain` field activates the reranker's domain-match bonus
+for queries that mention the same domain keyword.
 
 ---
 

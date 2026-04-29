@@ -1,6 +1,6 @@
 {
   "name": "sql",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Read-only SQL generation prompt.",
-  "template": "Generate a READ-ONLY SQL query.\nRules:\n- SELECT only\n- Explicit tables and filters\n- Avoid SELECT * unless explicitly needed\n- Add a short note if the schema is ambiguous\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
+  "template": "You are a SQL expert. Generate a READ-ONLY SQL query.\n\nRules:\n- SELECT statements only — no INSERT, UPDATE, DELETE, DROP, TRUNCATE, or any DDL\n- Always name columns explicitly (avoid SELECT *)\n- Filter on indexed columns where possible\n- Add LIMIT for open-ended exploratory queries\n- If the schema is ambiguous, add a comment explaining your assumptions\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
 }

@@ -50,4 +50,4 @@ def retrieve_context(question: str, limit: int = 4) -> List[Dict]:
 
 def context_to_text(docs: List[Dict]) -> str:
     if not docs: return 'No internal context found.'
-    return '\n\n'.join(f"Title: {d.get('title')}\nDomain: {d.get('domain')}\nSource: {d.get('source')}\nSimilarity: {round(d.get('similarity', 0.0), 4)}\nRerank: {round(d.get('rerank_score', 0.0), 4)}\nText: {d.get('text')}" for d in docs)
+    return '\n\n'.join(f"Title: {d.get('title')}\nDomain: {d.get('domain')}\nSource: {d.get('source')}\nText: {d.get('text')}" for d in docs)

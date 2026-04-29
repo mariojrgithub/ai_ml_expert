@@ -1,6 +1,6 @@
 from typing import Any, Dict
-from fastapi import FastAPI
-from .agent_runtime import run_agent_with_trace
+from fastapi import BackgroundTasks, FastAPI
+from .agent_runtime import run_agent_with_trace, stream_agent_tokens
 from .models import ChatRequest, ChatResponse
 from .prompt_registry import default_prompt_registry
 from .rag import reindex_embeddings
@@ -13,30 +13,25 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI(title='Engineering Copilot Agent', version='0.0.6')
 
-def infer_ui_format(intent: str, content: str):
-    if intent == "CODE":
-        if "class " in content or "@RestController" in content:
-            return "code", "java"
-        return "code", "python"
+_DOMAIN_TO_LANGUAGE: Dict[str, str] = {
+    "java": "java",
+    "python": "python",
+    "sql": "sql",
+    "mongodb": "javascript",
+    "code": "python",
+}
 
-    if intent == "SQL":
-        return "code", "sql"
+_INTENT_TO_FORMAT: Dict[str, str] = {
+    "CODE": "code",
+    "SQL": "code",
+    "MONGO": "code",
+    "QA": "markdown",
+}
 
-    if intent == "MONGO":
-        return "code", "javascript"
-
-    if content.strip().startswith("{") or content.strip().startswith("["):
-        try:
-            json.loads(content)
-            return "json", None
-        except Exception:
-            pass
-
-    return "markdown", None
-
-def chunk_for_stream(text: str, size: int = 32):
-    for i in range(0, len(text), size):
-        yield text[i : i + size]
+def resolve_format_and_language(intent: str, domain: str | None):
+    fmt = _INTENT_TO_FORMAT.get(intent, "markdown")
+    language = _DOMAIN_TO_LANGUAGE.get(domain or "", None) if fmt == "code" else None
+    return fmt, language
 
 @app.on_event('startup')
 def startup() -> None: ensure_indexes()
@@ -50,7 +45,9 @@ def seed() -> Dict[str, Any]: return {'seeded_documents': seed_sample_documents(
 @app.post('/admin/reindex')
 def reindex() -> Dict[str, Any]: return {'embedded_chunks': reindex_embeddings()}
 @app.post('/admin/evals/run')
-def run_evals() -> Dict[str, Any]: return run_all_evals()
+def run_evals(background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    background_tasks.add_task(run_all_evals)
+    return {'status': 'running', 'message': 'Eval run started in the background. Check GET /admin/evals/reports for results.'}
 @app.get('/admin/evals/reports')
 def eval_reports() -> Dict[str, Any]: return {'reports': list_report_files()}
 
@@ -61,16 +58,18 @@ def chat(request: ChatRequest) -> ChatResponse:
         user_input=request.message,
     )
 
-    answer = result.get("validated_output", "")
+    answer = str(result.get("validated_output") or "")
     intent = result.get("intent", "QA")
+    domain = result.get("domain")
     warnings = result.get("warnings", [])
     citations = result.get("citations", [])
 
-    fmt, language = infer_ui_format(intent, answer)
+    fmt, language = resolve_format_and_language(intent, domain)
 
     execution_id = save_execution({
         "sessionId": request.sessionId,
         "intent": intent,
+        "domain": domain,
         "answer": answer,
         "format": fmt,
         "language": language,
@@ -93,58 +92,68 @@ def chat(request: ChatRequest) -> ChatResponse:
 def chat_stream(request: ChatRequest):
     """
     Streams JSON lines (NDJSON).
-    Each line is a self-contained JSON object.
+    Each line is a self-contained JSON object:
+      {"type": "meta",  "format": ..., "language": ..., "intent": ..., "executionId": ...}
+      {"type": "delta", "content": "<token>"}  — one per LLM token
+      {"type": "done",  "warnings": [...], "citations": [...]}
     """
 
     def generator():
-        result = run_agent_with_trace(
+        meta_sent = False
+        fmt = "markdown"
+        language = None
+        intent = "QA"
+        execution_id = None
+
+        for event in stream_agent_tokens(
             session_id=request.sessionId,
             user_input=request.message,
-        )
+        ):
+            if event['type'] == 'pre':
+                state = event['state']
+                intent = state.get('intent', 'QA')
+                domain = state.get('domain')
+                fmt, language = resolve_format_and_language(intent, domain)
+                # executionId is not yet known — placeholder; updated after 'post'
+                yield json.dumps({
+                    "type": "meta",
+                    "format": fmt,
+                    "language": language,
+                    "intent": intent,
+                    "executionId": None,
+                }) + "\n"
+                meta_sent = True
 
-        answer = result.get("validated_output", "")
-        intent = result.get("intent", "QA")
-        warnings = result.get("warnings", [])
-        citations = result.get("citations", [])
+            elif event['type'] == 'token':
+                yield json.dumps({
+                    "type": "delta",
+                    "content": event['content'],
+                }) + "\n"
 
-        fmt, language = infer_ui_format(intent, answer)
-
-        execution_id = save_execution({
-            "sessionId": request.sessionId,
-            "intent": intent,
-            "answer": answer,
-            "format": fmt,
-            "language": language,
-            "warnings": warnings,
-            "citations": citations,
-        })
-
-        # ---- meta ----
-        yield json.dumps({
-            "type": "meta",
-            "format": fmt,
-            "language": language,
-            "intent": intent,
-            "executionId": execution_id,
-        }) + "\n"
-
-        # ---- content ----
-        for chunk in chunk_for_stream(answer):
-            yield json.dumps({
-                "type": "delta",
-                "content": chunk,
-            }) + "\n"
-
-        # ---- done ----
-        yield json.dumps({
-            "type": "done",
-            "warnings": warnings,
-            "citations": citations,
-        }) + "\n"
+            elif event['type'] == 'post':
+                state = event['state']
+                answer = str(state.get('validated_output') or "")
+                warnings = state.get('warnings', [])
+                citations = state.get('citations', [])
+                execution_id = save_execution({
+                    "sessionId": request.sessionId,
+                    "intent": intent,
+                    "domain": state.get('domain'),
+                    "answer": answer,
+                    "format": fmt,
+                    "language": language,
+                    "warnings": warnings,
+                    "citations": citations,
+                })
+                yield json.dumps({
+                    "type": "done",
+                    "executionId": execution_id,
+                    "warnings": warnings,
+                    "citations": citations,
+                }) + "\n"
 
     return StreamingResponse(
         generator(),
         media_type="application/x-ndjson",
     )
-
 

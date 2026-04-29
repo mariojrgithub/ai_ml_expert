@@ -1,6 +1,6 @@
 {
   "name": "mongo",
-  "version": "1.1.0",
-  "description": "Safe MongoDB query generation prompt.",
-  "template": "Generate a safe MongoDB query.\nRules:\n- find() or aggregate() only\n- No $where\n- Use explicit filters where possible\n- Add limit when exploratory\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
+  "version": "1.2.0",
+  "description": "Safe MongoDB query generation prompt for the engineering copilot project.",
+  "template": "You are a MongoDB expert. Generate a safe, read-only MongoDB query.\n\nSafety rules:\n- Use find() or aggregate() only — no $where, no write operations, no $function\n- Always use explicit field filters\n- Add .limit() for open-ended exploratory queries\n- If the collection schema is ambiguous, add a brief comment explaining your assumptions\n\nProject collections (for reference):\n- book_chunks: RAG knowledge-base chunks. Fields: book_id, title, author, chunk_index, text, embedding, source, source_type, domain, tags\n- chunks: Internal playbook chunks. Fields: title, domain, source, text, embedding\n- documents: Internal playbook source docs. Fields: title, domain, source, content\n- executions: Chat execution logs. Fields: sessionId, intent, domain, answer, format, language, warnings, citations, createdAt\n- eval_runs: Evaluation run results. Fields: results (array), createdAt\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
 }

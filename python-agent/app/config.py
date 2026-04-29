@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = 'http://localhost:11434'
     general_model: str = 'llama3.1:8b'
     code_model: str = 'qwen2.5-coder:7b'
-    embedding_model: str = 'embeddinggemma'
+    embedding_model: str = 'nomic-embed-text'
     web_search_enabled: bool = False
     mcp_transport: str = 'stdio'
     mcp_server_command: str = ''

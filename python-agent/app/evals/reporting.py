@@ -1,3 +1,4 @@
+import html
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,15 +17,17 @@ def build_report_artifacts(eval_run: Dict[str, Any]) -> Dict[str, str]:
     for r in eval_run.get('results', []):
         score = r.get('score', {})
         status = 'PASS' if score.get('passed') else 'FAIL'
-        failure = score.get('failure_category', '')
+        failure = html.escape(str(score.get('failure_category', '')))
+        row_id = html.escape(str(r.get('id', '')))
+        task_type = html.escape(str(r.get('task_type', '')))
         rows.append(
-            f"<tr><td>{r.get('id')}</td><td>{r.get('task_type')}</td>"
+            f"<tr><td>{row_id}</td><td>{task_type}</td>"
             f"<td>{status}</td><td>{failure}</td>"
-            f"<td>{score.get('required_hits')}</td>"
-            f"<td>{score.get('forbidden_hits')}</td></tr>"
+            f"<td>{html.escape(str(score.get('required_hits', [])))}</td>"
+            f"<td>{html.escape(str(score.get('forbidden_hits', [])))}</td></tr>"
         )
 
-    html = f"""<html><head><title>Eval Report</title>
+    report_html = f"""<html><head><title>Eval Report</title>
 <style>
 body{{font-family:Arial,sans-serif}}
 table{{border-collapse:collapse;width:100%}}
@@ -36,7 +39,7 @@ td,th{{border:1px solid #ddd;padding:8px}}
 <tr><th>ID</th><th>Task</th><th>Status</th><th>Failure Category</th><th>Required Hits</th><th>Forbidden Hits</th></tr>
 {''.join(rows)}
 </table></body></html>"""
-    html_path.write_text(html, encoding='utf-8')
+    html_path.write_text(report_html, encoding='utf-8')
     return {'json_report': str(json_path), 'html_report': str(html_path)}
 
 def list_report_files() -> List[str]:

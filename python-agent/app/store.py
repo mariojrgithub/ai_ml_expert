@@ -37,6 +37,7 @@ def ensure_indexes() -> None:
     book_chunks_collection().create_index(
         [("book_id", 1), ("chunk_index", 1)], unique=True, name="book_chunk_idx"
     )
+    book_chunks_collection().create_index("source_type", name="source_type_idx")
     executions_collection().create_index("createdAt")
     eval_runs_collection().create_index("createdAt")
 
@@ -92,10 +93,19 @@ def seed_sample_documents() -> int:
         for d in docs
     ]
 
-    documents_collection().delete_many({})
-    chunks_collection().delete_many({})
-    documents_collection().insert_many(docs)
-    chunks_collection().insert_many(chunks)
+    for doc in docs:
+        documents_collection().update_one(
+            {"title": doc["title"]},
+            {"$setOnInsert": doc},
+            upsert=True,
+        )
+
+    for chunk in chunks:
+        chunks_collection().update_one(
+            {"title": chunk["title"]},
+            {"$setOnInsert": chunk},
+            upsert=True,
+        )
 
     return len(docs)
 

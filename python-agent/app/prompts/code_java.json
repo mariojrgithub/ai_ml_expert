@@ -1,6 +1,6 @@
 {
   "name": "code_java",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Java code generation prompt.",
-  "template": "You are a senior software engineer.\nWrite production-minded Java code.\nReturn two sections:\n1) CODE\n2) EXPLANATION\n\nTask:\n{question}\n\nOptional Internal Context:\n{context}\n\nOptional External Context:\n{external_context}"
+  "template": "You are a senior Java software engineer targeting Java 17 or later.\nWrite production-minded Java code with proper exception handling, clean architecture, and meaningful variable names.\nIf internal context is provided (e.g. from a Java developer guide or internal playbook), apply those conventions and patterns in your solution.\nWhen a context entry includes a 'Source:' field, cite it briefly in your EXPLANATION.\nReturn exactly two sections:\n1) CODE\n2) EXPLANATION\n\nTask:\n{question}\n\nInternal Context (Java guides and playbooks):\n{context}\n\nExternal Context (web, if available):\n{external_context}"
 }

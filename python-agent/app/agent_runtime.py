@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Generator
 from langchain_core.messages import HumanMessage
 from .llm import general_llm, code_llm
 from .prompt_registry import default_prompt_registry
@@ -7,7 +7,6 @@ from .router import classify_intent, plan_context
 from .validators import validate_code, validate_mongo, validate_sql
 from .web import external_context_to_text, run_web_search
 from .tracing import timed_node
-from .citations import format_citations
 
 PROMPTS = default_prompt_registry()
 
@@ -58,10 +57,7 @@ def validate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     warnings.extend(new_warnings)
     if intent == 'QA' and not state.get('grounded', False): warnings.append('Grounded internal context not available for QA response.')
     if state.get('needs_web_search') and not state.get('external_results'): warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
-    final_answer = validated
-    if intent == 'QA' and state.get('grounded', False):
-        final_answer = validated + format_citations(state.get('citations', []))
-    return {'validated_output': final_answer, 'warnings': warnings}
+    return {'validated_output': validated, 'warnings': warnings}
 
 def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
     state: Dict[str, Any] = {'session_id': session_id, 'user_input': user_input, 'warnings': [], 'trace': []}
@@ -79,3 +75,78 @@ def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
         'grounded': state.get('grounded', False),
     }
     return state
+
+
+def _build_prompt_for_state(state: Dict[str, Any]) -> tuple[Any, str]:
+    """Return (llm, prompt_text) for streaming, without invoking the LLM."""
+    intent = state['intent']
+    domain = state.get('domain')
+    question = state['user_input']
+    context = context_to_text(state.get('retrieved_docs', []))
+    external_context = external_context_to_text(state.get('external_results', []))
+
+    if intent == 'QA':
+        prompt = PROMPTS.render('qa', {'question': question, 'context': context, 'external_context': external_context})
+        return general_llm(), prompt
+    elif intent == 'SQL':
+        prompt = PROMPTS.render('sql', {'question': question, 'context': context})
+        return general_llm(), prompt
+    elif intent == 'MONGO':
+        prompt = PROMPTS.render('mongo', {'question': question, 'context': context})
+        return general_llm(), prompt
+    elif intent == 'CODE' and domain == 'java':
+        prompt = PROMPTS.render('code_java', {'question': question, 'context': context, 'external_context': external_context})
+        return code_llm(), prompt
+    else:
+        prompt = PROMPTS.render('code_python', {'question': question, 'context': context, 'external_context': external_context})
+        return code_llm(), prompt
+
+
+def stream_agent_tokens(session_id: str, user_input: str) -> Generator[Dict[str, Any], None, None]:
+    """
+    Runs the pipeline up to (but not including) the LLM call, then streams
+    tokens from the LLM as they arrive.  Yields dicts:
+      {'type': 'pre',   'state': state}        — after routing/retrieval, before generation
+      {'type': 'token', 'content': str}         — one LLM token
+      {'type': 'post',  'state': state}         — after validation with full state
+    """
+    state: Dict[str, Any] = {'session_id': session_id, 'user_input': user_input, 'warnings': [], 'trace': []}
+
+    for name, fn in [
+        ('route_intent', route_intent_node),
+        ('context_plan', context_plan_node),
+        ('retrieve', retrieve_node),
+        ('web_search', web_search_node),
+    ]:
+        timed_node(name, fn, state)
+
+    # Early-exit for ungrounded QA — yield a single token then wrap up
+    no_context = (state.get('intent') == 'QA' and not state.get('retrieved_docs'))
+    if no_context:
+        fallback = 'I could not find sufficient internal context to answer this confidently.'
+        state.update({'draft_output': fallback, 'grounded': False, 'prompt_name': 'qa', 'model_name': 'general'})
+        yield {'type': 'pre', 'state': state}
+        yield {'type': 'token', 'content': fallback}
+    else:
+        yield {'type': 'pre', 'state': state}
+        llm, prompt = _build_prompt_for_state(state)
+        full_tokens = []
+        for chunk in llm.stream([HumanMessage(content=prompt)]):
+            token = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            full_tokens.append(token)
+            yield {'type': 'token', 'content': token}
+        state['draft_output'] = ''.join(full_tokens)
+
+    timed_node('validate', validate_node, state)
+    state['run_metadata'] = {
+        'session_id': session_id,
+        'intent': state.get('intent'),
+        'domain': state.get('domain'),
+        'prompt_name': state.get('prompt_name'),
+        'prompt_version': state.get('prompt_version'),
+        'model_name': state.get('model_name'),
+        'retrieved_doc_count': state.get('retrieval_stats', {}).get('doc_count', 0),
+        'external_result_count': state.get('external_stats', {}).get('result_count', 0),
+        'grounded': state.get('grounded', False),
+    }
+    yield {'type': 'post', 'state': state}

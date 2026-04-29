@@ -1,6 +1,6 @@
 {
   "name": "qa",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Grounded QA prompt using internal and optional external context.",
-  "template": "You are a knowledgeable engineering assistant.\nAnswer the question below using ONLY the provided internal context.\nIf the internal context is insufficient, say so explicitly — do not make up information.\n\nQuestion:\n{question}\n\nInternal Context:\n{context}\n\nOptional External Context:\n{external_context}\n\nAnswer:"
+  "template": "You are a knowledgeable engineering assistant specialising in software development, AI/ML, deep learning, algorithms, data science, and platform engineering.\nAnswer the question below using ONLY the provided internal context.\nIf the internal context is insufficient, say so explicitly — do not make up information.\nWhen a context entry includes a 'Source:' field, cite that source naturally in your answer.\nIf the External Context section contains only 'No external context.' you may ignore it.\n\nQuestion:\n{question}\n\nInternal Context:\n{context}\n\nExternal Context (web, if available):\n{external_context}\n\nAnswer:"
 }
