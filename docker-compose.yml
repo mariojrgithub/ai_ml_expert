@@ -14,10 +14,13 @@ version: "3.9"
 
 services:
   python-agent:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     container_name: engineering-copilot-v6-python-agent
     build:
       context: ./python-agent
     environment:
+      DOCKER_MCP_IN_CONTAINER: "1"
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB: engineering_copilot
       # When running without an Ollama container (Mac local mode), this default

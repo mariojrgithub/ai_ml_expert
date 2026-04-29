@@ -7,6 +7,7 @@ from .router import classify_intent, plan_context
 from .validators import validate_code, validate_mongo, validate_sql
 from .web import external_context_to_text, run_web_search
 from .tracing import timed_node
+from .config import settings
 
 PROMPTS = default_prompt_registry()
 
@@ -29,7 +30,7 @@ def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
     return {'retrieved_docs': docs, 'citations': citations, 'retrieval_stats': {'doc_count': len(docs)}}
 def web_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
     results = run_web_search(state['user_input']) if state.get('needs_web_search', False) else []
-    citations = list(state.get('citations', [])) + [{'source': r.get('source', 'unknown'),'title': r.get('title', 'unknown'),'snippet': r.get('snippet', '')} for r in results]
+    citations = list(state.get('citations', [])) + [{'source': r.get('source', 'unknown'),'title': r.get('title', 'unknown'),'snippet': r.get('snippet', ''),'url': r.get('url')} for r in results]
     return {'external_results': results, 'citations': citations, 'external_stats': {'result_count': len(results)}}
 def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     intent = state['intent']; domain = state.get('domain'); question = state['user_input']
@@ -37,11 +38,13 @@ def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     prompt_name = 'qa'; model_name = 'general'
     if intent == 'QA':
         prompt_name = 'qa'; model_name = 'general'
-        if not context_docs:
-            return {'draft_output': 'I could not find sufficient internal context to answer this confidently.', 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': False}
+        has_internal = bool(context_docs)
+        has_external = bool(state.get('external_results'))
+        if not (has_internal or has_external):
+            return {'draft_output': 'I could not find sufficient context to answer this confidently.', 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': False}
         prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
-        return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': True}
+        return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': has_internal or has_external}
     elif intent == 'SQL':
         prompt_name = 'sql'; model_name = 'general'
         prompt = PROMPTS.render(prompt_name, {'question': question,'context': context})
@@ -67,7 +70,7 @@ def validate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     else: validated, new_warnings = text, []
     warnings.extend(new_warnings)
     if intent == 'QA' and not state.get('grounded', False): warnings.append('Grounded internal context not available for QA response.')
-    if state.get('needs_web_search') and not state.get('external_results'): warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
+    if state.get('needs_web_search') and settings.web_search_enabled and not state.get('external_results'): warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
     return {'validated_output': validated, 'warnings': warnings}
 
 def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
@@ -133,9 +136,13 @@ def stream_agent_tokens(session_id: str, user_input: str) -> Generator[Dict[str,
         timed_node(name, fn, state)
 
     # Early-exit for ungrounded QA — yield a single token then wrap up
-    no_context = (state.get('intent') == 'QA' and not state.get('retrieved_docs'))
+    no_context = (
+        state.get('intent') == 'QA'
+        and not state.get('retrieved_docs')
+        and not state.get('external_results')
+    )
     if no_context:
-        fallback = 'I could not find sufficient internal context to answer this confidently.'
+        fallback = 'I could not find sufficient context to answer this confidently.'
         state.update({'draft_output': fallback, 'grounded': False, 'prompt_name': 'qa', 'model_name': 'general'})
         yield {'type': 'pre', 'state': state}
         yield {'type': 'token', 'content': fallback}
