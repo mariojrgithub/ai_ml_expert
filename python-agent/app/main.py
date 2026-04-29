@@ -14,11 +14,18 @@ from fastapi.responses import StreamingResponse
 app = FastAPI(title='Engineering Copilot Agent', version='0.0.6')
 
 _DOMAIN_TO_LANGUAGE: Dict[str, str] = {
-    "java": "java",
-    "python": "python",
-    "sql": "sql",
-    "mongodb": "javascript",
-    "code": "python",
+    "java":          "java",
+    "python":        "python",
+    "deep_learning": "python",
+    "data_science":  "python",
+    "algorithms":    "python",
+    "security":      "python",
+    "finance":       "python",
+    "ml":            "python",
+    "platform":      "python",
+    "sql":           "sql",
+    "mongodb":       "javascript",
+    "code":          "python",
 }
 
 _INTENT_TO_FORMAT: Dict[str, str] = {

@@ -1,4 +1,90 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+# ---------------------------------------------------------------------------
+# Keyword sets per domain used for sub-domain detection.
+# Order matters in _detect_*_domain: more specific domains are checked first.
+# ---------------------------------------------------------------------------
+_DL_KEYWORDS: List[str] = [
+    "pytorch", "tensorflow", "keras", "neural network", "deep learning",
+    "cnn", "rnn", "lstm", "transformer", "backprop", "gradient descent",
+    "epoch", "batch size", "autograd", "embedding layer", "attention",
+]
+_DS_KEYWORDS: List[str] = [
+    "pandas", "numpy", "dataframe", "data analysis", "matplotlib",
+    "seaborn", "sklearn", "scikit-learn", "data science", "pivot table",
+    "groupby", "merge dataframe", "csv",
+]
+_ALGO_KEYWORDS: List[str] = [
+    "algorithm", "data structure", "sorting", "graph traversal", "binary search",
+    "big o", "complexity", "linked list", "hash table", "dynamic programming",
+    "breadth first", "depth first", "tree", "heap", "trie",
+]
+_SEC_KEYWORDS: List[str] = [
+    "security", "hacking", "exploit", "vulnerability", "encryption", "cipher",
+    "penetration", "ctf", "malware", "packet sniff", "reverse engineering",
+    "fuzzing", "payload", "injection",
+]
+_FIN_KEYWORDS: List[str] = [
+    "finance", "trading", "portfolio", "quant", "stock", "derivative",
+    "option pricing", "risk", "black-scholes", "bond", "yield curve",
+    "sharpe", "volatility", "backtest",
+]
+_ML_KEYWORDS: List[str] = [
+    "machine learning", "bayesian", "linear algebra", "matrix", "regression",
+    "classification", "clustering", "probability", "naive bayes", "random forest",
+    "gradient boost", "cross validation", "feature engineering",
+]
+_PLATFORM_KEYWORDS: List[str] = [
+    "platform engineering", "devops", "kubernetes", "docker", "infrastructure",
+    "ci/cd", "aws", "cloud", "helm", "terraform", "ansible", "pipeline",
+    "service mesh", "observability",
+]
+
+
+def _detect_code_domain(text: str) -> str:
+    """Return the most specific domain for a CODE-intent question."""
+    if "java" in text or "spring boot" in text or "spring" in text or "jvm" in text:
+        return "java"
+    if any(kw in text for kw in _DL_KEYWORDS):
+        return "deep_learning"
+    if any(kw in text for kw in _DS_KEYWORDS):
+        return "data_science"
+    if any(kw in text for kw in _SEC_KEYWORDS):
+        return "security"
+    if any(kw in text for kw in _FIN_KEYWORDS):
+        return "finance"
+    if any(kw in text for kw in _ALGO_KEYWORDS):
+        return "algorithms"
+    if "python" in text:
+        return "python"
+    return "code"
+
+
+def _detect_subject_domain(text: str) -> str:
+    """Return the subject domain for a QA-intent question (drives reranker bonus)."""
+    if "java" in text or "spring boot" in text or "spring" in text:
+        return "java"
+    if any(kw in text for kw in _DL_KEYWORDS):
+        return "deep_learning"
+    if any(kw in text for kw in _DS_KEYWORDS):
+        return "data_science"
+    if any(kw in text for kw in _SEC_KEYWORDS):
+        return "security"
+    if any(kw in text for kw in _FIN_KEYWORDS):
+        return "finance"
+    if any(kw in text for kw in _ALGO_KEYWORDS):
+        return "algorithms"
+    if any(kw in text for kw in _ML_KEYWORDS):
+        return "ml"
+    if any(kw in text for kw in _PLATFORM_KEYWORDS):
+        return "platform"
+    if "python" in text:
+        return "python"
+    if "mongodb" in text or "mongo" in text:
+        return "mongodb"
+    if "sql" in text:
+        return "sql"
+    return "general"
 
 
 def classify_intent(message: str) -> Dict[str, Any]:
@@ -6,20 +92,24 @@ def classify_intent(message: str) -> Dict[str, Any]:
     intent = "QA"
     domain = "general"
 
+    # Database query intents — checked first (very explicit signals)
     if "mongodb" in text or "mongo query" in text or "aggregate(" in text or "find(" in text:
         intent, domain = "MONGO", "mongodb"
     elif "sql" in text or "select " in text or "query table" in text:
         intent, domain = "SQL", "sql"
+    # Code generation intent
     elif any(token in text for token in [
-        "write code", "python", "java", "spring boot", "function", "class", "method", "api endpoint"
+        "write code", "implement", "code", "program",
+        "python", "java", "spring boot", "spring",
+        "function", "class", "method", "api endpoint",
+        "pytorch", "tensorflow", "keras",
+        "pandas", "algorithm",
     ]):
         intent = "CODE"
-        if "java" in text or "spring boot" in text:
-            domain = "java"
-        elif "python" in text:
-            domain = "python"
-        else:
-            domain = "code"
+        domain = _detect_code_domain(text)
+    else:
+        # QA — detect subject domain so the reranker can boost relevant book chunks
+        domain = _detect_subject_domain(text)
 
     return {
         "intent": intent,

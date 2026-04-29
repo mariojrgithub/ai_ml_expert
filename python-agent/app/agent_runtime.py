@@ -10,6 +10,17 @@ from .tracing import timed_node
 
 PROMPTS = default_prompt_registry()
 
+# Maps CODE-intent domain → prompt name.
+# Domains not listed here fall back to the general code_python prompt.
+_CODE_PROMPT_MAP: Dict[str, str] = {
+    "java":          "code_java",
+    "deep_learning": "code_deep_learning",
+    "data_science":  "code_data_science",
+    "algorithms":    "code_algorithms",
+    "security":      "code_security",
+    "finance":       "code_finance",
+}
+
 def route_intent_node(state: Dict[str, Any]) -> Dict[str, Any]: return classify_intent(state['user_input'])
 def context_plan_node(state: Dict[str, Any]) -> Dict[str, Any]: return plan_context(state['user_input'], state['intent'])
 def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,7 +55,7 @@ def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
     else:
-        prompt_name = 'code_python'; model_name = 'code'
+        prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python'); model_name = 'code'
         prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
     return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': bool(context_docs) if intent == 'QA' else True}
@@ -98,7 +109,8 @@ def _build_prompt_for_state(state: Dict[str, Any]) -> tuple[Any, str]:
         prompt = PROMPTS.render('code_java', {'question': question, 'context': context, 'external_context': external_context})
         return code_llm(), prompt
     else:
-        prompt = PROMPTS.render('code_python', {'question': question, 'context': context, 'external_context': external_context})
+        prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python')
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'external_context': external_context})
         return code_llm(), prompt
 
 
