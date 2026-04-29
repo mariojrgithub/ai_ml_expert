@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
+
 
 @Service
 public class AgentGatewayService {
@@ -25,6 +27,7 @@ private final WebClient agentWebClient;
                 .bodyValue(request)
                 .retrieve()
                 .bodyToMono(ChatResponse.class)
+                .timeout(Duration.ofSeconds(300))
                 .block();
     }
 

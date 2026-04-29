@@ -14,7 +14,7 @@ class ChatResponse(BaseModel):
     executionId: str
     intent: Intent
     format: UiFormat = "markdown"
-    content: Any
+    content: str
     language: Optional[str] = None
     warnings: List[str] = []
     citations: List[Dict[str, Any]] = []

@@ -13,18 +13,6 @@ version: "3.9"
 # ---------------------------------------------------------------------------
 
 services:
-  api:
-    container_name: engineering-copilot-v6-api
-    build:
-      context: ./java-api
-    environment:
-      AGENT_BASE_URL: http://python-agent:8000
-      SERVER_PORT: 8080
-    depends_on:
-      - python-agent
-    ports:
-      - "8080:8080"
-
   python-agent:
     container_name: engineering-copilot-v6-python-agent
     build:
@@ -39,7 +27,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       GENERAL_MODEL: ${GENERAL_MODEL:-llama3.1:8b}
       CODE_MODEL: ${CODE_MODEL:-qwen2.5-coder:7b}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
       MCP_TRANSPORT: ${MCP_TRANSPORT:-stdio}
       MCP_SERVER_COMMAND: ${MCP_SERVER_COMMAND:-}
@@ -54,6 +42,25 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  api:
+    container_name: engineering-copilot-v6-api
+    build:
+      context: ./java-api
+    environment:
+      AGENT_BASE_URL: http://python-agent:8000
+      SERVER_PORT: 8080
+    depends_on:
+      python-agent:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
 
   mongo:
     container_name: engineering-copilot-v6-mongo
@@ -64,8 +71,9 @@ services:
   streamlit-ui:
     build: ./streamlit-ui
     container_name: engineering-copilot-v6-streamlit-ui
+    environment:
+      API_BASE_URL: http://api:8080
     ports:
       - "8501:8501"
     depends_on:
       - api
-      - python-agent

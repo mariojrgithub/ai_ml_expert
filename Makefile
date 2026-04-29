@@ -33,7 +33,7 @@ down:
 pull-models:
 	docker exec engineering-copilot-v6-ollama ollama pull llama3.1:8b
 	docker exec engineering-copilot-v6-ollama ollama pull qwen2.5-coder:7b
-	docker exec engineering-copilot-v6-ollama ollama pull embeddinggemma
+	docker exec engineering-copilot-v6-ollama ollama pull nomic-embed-text
 
 # ---------------------------------------------------------------------------
 help:

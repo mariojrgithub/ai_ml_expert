@@ -1,4 +1,5 @@
 import json
+import os
 import uuid
 from typing import Any, Dict, Generator, List
 
@@ -12,13 +13,11 @@ import streamlit as st
 #
 # If Streamlit runs inside Docker Compose, use the service name `api`.
 # If Streamlit runs outside Docker, switch these to localhost.
+# Override via API_BASE_URL environment variable.
 # -------------------------------------------------------------------
-API_URL = "http://api:8080/api/chat"
-STREAM_URL = "http://api:8080/api/chat/stream"
-
-# For local-only (outside Docker), use:
-# API_URL = "http://localhost:8080/api/chat"
-# STREAM_URL = "http://localhost:8080/api/chat/stream"
+_API_BASE = os.environ.get("API_BASE_URL", "http://api:8080")
+API_URL = f"{_API_BASE}/api/chat"
+STREAM_URL = f"{_API_BASE}/api/chat/stream"
 
 st.set_page_config(
     page_title="Engineering Copilot",
