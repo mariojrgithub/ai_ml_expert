@@ -102,6 +102,8 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
         timeout=300,
     ) as response:
         response.raise_for_status()
+        decoder = json.JSONDecoder()
+        buffer = ""
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -111,18 +113,33 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
                 line = line[len("data:"):].strip()
             if not line:
                 continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            # Guard against Jackson double-encoding (String wrapped in JSON quotes)
-            if isinstance(parsed, str):
+
+            buffer += line
+
+            # Some gateway paths concatenate multiple JSON objects in one chunk.
+            while buffer:
+                stripped = buffer.lstrip()
+                if not stripped:
+                    buffer = ""
+                    break
+
                 try:
-                    parsed = json.loads(parsed)
+                    parsed, end_idx = decoder.raw_decode(stripped)
                 except json.JSONDecodeError:
-                    continue
-            if isinstance(parsed, dict):
-                yield parsed
+                    # Need more bytes to decode the next object.
+                    break
+
+                buffer = stripped[end_idx:]
+
+                # Guard against Jackson double-encoding (String wrapped in JSON quotes)
+                if isinstance(parsed, str):
+                    try:
+                        parsed = json.loads(parsed)
+                    except json.JSONDecodeError:
+                        continue
+
+                if isinstance(parsed, dict):
+                    yield parsed
 
 
 def call_non_streaming(session_id: str, prompt: str) -> Dict[str, Any]:
@@ -200,6 +217,8 @@ if prompt:
                 accumulated = ""
                 warnings: List[str] = []
                 citations: List[Dict] = []
+                stream_error: str | None = None
+                saw_done = False
 
                 placeholder = st.empty()
 
@@ -220,12 +239,31 @@ if prompt:
                         placeholder.markdown(accumulated + "▌")
 
                     elif frame_type == "done":
+                        saw_done = True
                         warnings = frame.get("warnings", [])
                         citations = frame.get("citations", [])
 
+                    elif frame_type == "error":
+                        stream_error = frame.get("message", "Streaming failed.")
+                        break
+
                 # Replace live preview with final rendered content
                 placeholder.empty()
-                render_content(fmt, accumulated, language)
+                if stream_error:
+                    st.error(stream_error)
+                    warnings = warnings + ["Streaming returned an error frame."]
+                    accumulated = stream_error
+                    fmt = "text"
+                    language = None
+                elif not accumulated and not saw_done:
+                    fallback = "No output was produced by the stream."
+                    st.warning(fallback)
+                    warnings = warnings + [fallback]
+                    accumulated = fallback
+                    fmt = "text"
+                    language = None
+                else:
+                    render_content(fmt, accumulated, language)
 
                 if st.session_state.show_warnings and warnings:
                     with st.expander("Warnings"):

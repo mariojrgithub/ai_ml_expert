@@ -40,6 +40,12 @@ _PLATFORM_KEYWORDS: List[str] = [
     "service mesh", "observability",
 ]
 
+_CODE_REQUEST_MARKERS: List[str] = [
+    "write code", "generate code", "implement", "build a function",
+    "create a function", "code snippet", "refactor", "debug this code",
+    "fix this code", "write a script", "show me code",
+]
+
 
 def _detect_code_domain(text: str) -> str:
     """Return the most specific domain for a CODE-intent question."""
@@ -87,6 +93,15 @@ def _detect_subject_domain(text: str) -> str:
     return "general"
 
 
+def _looks_like_code_request(text: str) -> bool:
+    if any(marker in text for marker in _CODE_REQUEST_MARKERS):
+        return True
+    if "```" in text:
+        return True
+    # Typical direct programming asks without explicit "write code" phrasing.
+    return text.startswith("how do i code") or text.startswith("how to code")
+
+
 def classify_intent(message: str) -> Dict[str, Any]:
     text = message.lower()
     intent = "QA"
@@ -98,13 +113,7 @@ def classify_intent(message: str) -> Dict[str, Any]:
     elif "sql" in text or "select " in text or "query table" in text:
         intent, domain = "SQL", "sql"
     # Code generation intent
-    elif any(token in text for token in [
-        "write code", "implement", "code", "program",
-        "python", "java", "spring boot", "spring",
-        "function", "class", "method", "api endpoint",
-        "pytorch", "tensorflow", "keras",
-        "pandas", "algorithm",
-    ]):
+    elif _looks_like_code_request(text):
         intent = "CODE"
         domain = _detect_code_domain(text)
     else:

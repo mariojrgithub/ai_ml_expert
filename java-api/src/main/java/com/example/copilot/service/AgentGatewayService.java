@@ -6,6 +6,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 
@@ -20,15 +21,14 @@ private final WebClient agentWebClient;
         this.agentWebClient = agentWebClient;
     }
 
-    public ChatResponse chat(ChatRequest request) {
+    public Mono<ChatResponse> chat(ChatRequest request) {
         return agentWebClient.post()
                 .uri("/agent/chat")
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(request)
                 .retrieve()
                 .bodyToMono(ChatResponse.class)
-                .timeout(Duration.ofSeconds(300))
-                .block();
+                .timeout(Duration.ofSeconds(300));
     }
 
     public Flux<String> chatStream(ChatRequest request) {

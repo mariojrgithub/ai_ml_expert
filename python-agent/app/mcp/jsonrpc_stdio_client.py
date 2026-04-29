@@ -53,9 +53,10 @@ class JsonRpcStdioMcpClient:
 
     async def request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         self._request_id += 1
+        request_id = self._request_id
         payload = {
             "jsonrpc": "2.0",
-            "id": self._request_id,
+            "id": request_id,
             "method": method,
             "params": params,
         }
@@ -63,12 +64,27 @@ class JsonRpcStdioMcpClient:
         self.process.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
         await self.process.stdin.drain()
 
-        line = await self.process.stdout.readline()
-        if not line:
-            raise RuntimeError("No response received from MCP server")
+        while True:
+            line = await self.process.stdout.readline()
+            if not line:
+                stderr_bytes = await self.process.stderr.read()
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                rc = self.process.returncode
+                raise RuntimeError(
+                    f"No response received from MCP server (returncode={rc}, stderr={stderr_text or '<empty>'})"
+                )
 
-        message = json.loads(line.decode("utf-8"))
-        if "error" in message:
-            raise RuntimeError(f"MCP error: {message['error']}")
+            try:
+                message = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError:
+                # Ignore non-JSON noise from subprocess stdout.
+                continue
 
-        return message.get("result", {})
+            # MCP servers can emit notifications/log events before the actual reply.
+            if message.get("id") != request_id:
+                continue
+
+            if "error" in message:
+                raise RuntimeError(f"MCP error: {message['error']}")
+
+            return message.get("result", {})

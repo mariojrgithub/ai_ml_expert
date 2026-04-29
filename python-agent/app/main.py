@@ -103,6 +103,7 @@ def chat_stream(request: ChatRequest):
       {"type": "meta",  "format": ..., "language": ..., "intent": ..., "executionId": ...}
       {"type": "delta", "content": "<token>"}  — one per LLM token
       {"type": "done",  "warnings": [...], "citations": [...]}
+      {"type": "error", "message": "..."}      — on stream failure
     """
 
     def generator():
@@ -112,55 +113,67 @@ def chat_stream(request: ChatRequest):
         intent = "QA"
         execution_id = None
 
-        for event in stream_agent_tokens(
-            session_id=request.sessionId,
-            user_input=request.message,
-        ):
-            if event['type'] == 'pre':
-                state = event['state']
-                intent = state.get('intent', 'QA')
-                domain = state.get('domain')
-                fmt, language = resolve_format_and_language(intent, domain)
-                # executionId is not yet known — placeholder; updated after 'post'
+        try:
+            for event in stream_agent_tokens(
+                session_id=request.sessionId,
+                user_input=request.message,
+            ):
+                if event["type"] == "pre":
+                    state = event["state"]
+                    intent = state.get("intent", "QA")
+                    domain = state.get("domain")
+                    fmt, language = resolve_format_and_language(intent, domain)
+                    yield json.dumps({
+                        "type": "meta",
+                        "format": fmt,
+                        "language": language,
+                        "intent": intent,
+                        "executionId": None,
+                    }) + "\n"
+                    meta_sent = True
+
+                elif event["type"] == "token":
+                    yield json.dumps({
+                        "type": "delta",
+                        "content": event["content"],
+                    }) + "\n"
+
+                elif event["type"] == "post":
+                    state = event["state"]
+                    answer = str(state.get("validated_output") or "")
+                    warnings = state.get("warnings", [])
+                    citations = state.get("citations", [])
+                    execution_id = save_execution({
+                        "sessionId": request.sessionId,
+                        "intent": intent,
+                        "domain": state.get("domain"),
+                        "answer": answer,
+                        "format": fmt,
+                        "language": language,
+                        "warnings": warnings,
+                        "citations": citations,
+                    })
+                    yield json.dumps({
+                        "type": "done",
+                        "executionId": execution_id,
+                        "warnings": warnings,
+                        "citations": citations,
+                    }) + "\n"
+        except Exception as exc:
+            if not meta_sent:
                 yield json.dumps({
                     "type": "meta",
                     "format": fmt,
                     "language": language,
                     "intent": intent,
-                    "executionId": None,
-                }) + "\n"
-                meta_sent = True
-
-            elif event['type'] == 'token':
-                yield json.dumps({
-                    "type": "delta",
-                    "content": event['content'],
-                }) + "\n"
-
-            elif event['type'] == 'post':
-                state = event['state']
-                answer = str(state.get('validated_output') or "")
-                warnings = state.get('warnings', [])
-                citations = state.get('citations', [])
-                execution_id = save_execution({
-                    "sessionId": request.sessionId,
-                    "intent": intent,
-                    "domain": state.get('domain'),
-                    "answer": answer,
-                    "format": fmt,
-                    "language": language,
-                    "warnings": warnings,
-                    "citations": citations,
-                })
-                yield json.dumps({
-                    "type": "done",
                     "executionId": execution_id,
-                    "warnings": warnings,
-                    "citations": citations,
                 }) + "\n"
+            yield json.dumps({
+                "type": "error",
+                "message": f"stream failed: {exc}",
+            }) + "\n"
 
     return StreamingResponse(
         generator(),
         media_type="application/x-ndjson",
     )
-
