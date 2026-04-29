@@ -169,7 +169,7 @@ def render_content(fmt: str, content: Any, language: str | None):
 # -------------------------------------------------------------------
 # Render prior messages
 # -------------------------------------------------------------------
-for msg in st.session_state.messages:
+for _msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             render_content(
@@ -177,17 +177,17 @@ for msg in st.session_state.messages:
                 msg["content"],
                 msg.get("language"),
             )
-            warnings = msg.get("warnings") or []
-            citations = msg.get("citations") or []
+            _replay_warnings = msg.get("warnings") or []
+            _replay_citations = msg.get("citations") or []
 
-            if st.session_state.show_warnings and warnings:
-                with st.expander("Warnings"):
-                    for w in warnings:
+            if st.session_state.show_warnings and _replay_warnings:
+                with st.expander("Warnings", expanded=False, key=f"warnings_{_msg_idx}"):
+                    for w in _replay_warnings:
                         st.write(f"- {w}")
 
-            if st.session_state.show_citations and citations:
-                with st.expander("Citations"):
-                    for c in citations:
+            if st.session_state.show_citations and _replay_citations:
+                with st.expander("Citations", expanded=False, key=f"citations_{_msg_idx}"):
+                    for c in _replay_citations:
                         st.json(c)
         else:
             st.markdown(msg["content"])
@@ -245,6 +245,7 @@ if prompt:
                         saw_done = True
                         warnings = frame.get("warnings", [])
                         citations = frame.get("citations", [])
+                        break
 
                     elif frame_type == "error":
                         stream_error = frame.get("message", "Streaming failed.")
@@ -269,12 +270,12 @@ if prompt:
                     render_content(fmt, accumulated, language)
 
                 if st.session_state.show_warnings and warnings:
-                    with st.expander("Warnings"):
+                    with st.expander("Warnings", expanded=False, key="warnings_streaming"):
                         for w in warnings:
                             st.write(f"- {w}")
 
                 if st.session_state.show_citations and citations:
-                    with st.expander("Citations"):
+                    with st.expander("Citations", expanded=False, key="citations_streaming"):
                         for c in citations:
                             st.json(c)
 
@@ -320,12 +321,12 @@ if prompt:
                 render_content(fmt, content, language)
 
                 if st.session_state.show_warnings and warnings:
-                    with st.expander("Warnings"):
+                    with st.expander("Warnings", expanded=False, key="warnings_nonstreaming"):
                         for w in warnings:
                             st.write(f"- {w}")
 
                 if st.session_state.show_citations and citations:
-                    with st.expander("Citations"):
+                    with st.expander("Citations", expanded=False, key="citations_nonstreaming"):
                         for c in citations:
                             st.json(c)
 
@@ -350,3 +351,4 @@ if prompt:
                 }
 
     st.session_state.messages.append(assistant_msg)
+    st.rerun()
