@@ -221,6 +221,7 @@ if prompt:
                 saw_done = False
 
                 placeholder = st.empty()
+                placeholder.info("🤔 Generating response...")
 
                 for frame in stream_gateway_response(
                     st.session_state.session_id,
@@ -233,6 +234,8 @@ if prompt:
                         language = frame.get("language")
 
                     elif frame_type == "delta":
+                        if not accumulated:  # First chunk, clear loading message
+                            placeholder.empty()
                         accumulated += frame.get("content", "")
                         # Show live preview as markdown regardless of final format
                         # so the user sees progressive output
@@ -298,11 +301,15 @@ if prompt:
                 }
 
         else:
+            placeholder = st.empty()
+            placeholder.info("🔄 Fetching response...")
+            
             try:
                 data = call_non_streaming(
                     st.session_state.session_id,
                     prompt,
                 )
+                placeholder.empty()
 
                 content = data.get("content") or data.get("answer") or ""
                 fmt = data.get("format", "markdown")

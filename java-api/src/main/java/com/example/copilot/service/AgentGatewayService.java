@@ -38,6 +38,9 @@ private final WebClient agentWebClient;
                 .accept(MediaType.valueOf("application/x-ndjson"))
                 .bodyValue(request)
                 .retrieve()
-                .bodyToFlux(String.class);
+                .bodyToFlux(String.class)
+                // StringDecoder already splits on \n; just drop any blank lines that
+                // arrive as SSE separators or keep-alive frames.
+                .filter(line -> !line.isBlank());
     }
 }

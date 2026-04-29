@@ -1,5 +1,6 @@
 from typing import Any, Dict
 from fastapi import BackgroundTasks, FastAPI
+from starlette.concurrency import iterate_in_threadpool
 from .agent_runtime import run_agent_with_trace, stream_agent_tokens
 from .models import ChatRequest, ChatResponse
 from .prompt_registry import default_prompt_registry
@@ -96,7 +97,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/agent/chat/stream")
-def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest):
     """
     Streams JSON lines (NDJSON).
     Each line is a self-contained JSON object:
@@ -174,6 +175,11 @@ def chat_stream(request: ChatRequest):
             }) + "\n"
 
     return StreamingResponse(
-        generator(),
+        iterate_in_threadpool(generator()),
         media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )

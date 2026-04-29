@@ -24,7 +24,7 @@ private final AgentGatewayService agentGatewayService;
                 .map(ResponseEntity::ok);
     }
 
-    @PostMapping(value = "/chat/stream", produces = "application/x-ndjson")
+    @PostMapping(value = "/chat/stream", produces = "text/event-stream")
     public Flux<String> chatStream(@Valid @RequestBody ChatRequest request) {
         return agentGatewayService.chatStream(request);
     }
