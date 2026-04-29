@@ -15,7 +15,7 @@ A local-first engineering copilot starter built with:
 ## Project structure
 
 ```text
-ai-ml-expert/
+ai_ml_expert/
 ├── java-api/
 ├── python-agent/
 ├── streamlit-ui/
@@ -65,7 +65,7 @@ The Python agent exposes endpoints such as:
 
 The Java gateway exposes:
 - `POST /api/chat`  *(proxies to `/agent/chat`)*
-- `POST /api/chat/stream`  *(proxies to `/agent/chat/stream`, re-wrapped as SSE)*
+- `POST /api/chat/stream`  *(proxies to `/agent/chat/stream`, returned as NDJSON)*
 
 ---
 
@@ -220,7 +220,7 @@ collection. The notebook uses the same `nomic-embed-text` model configured in th
 > re-run the notebook to regenerate all embeddings in the new vector space, then call
 > `POST /admin/reindex` to regenerate the internal playbook embeddings as well.
 
-### Step 5 — Test chat through the Java gateway
+### Step 6 — Test chat through the Java gateway
 
 Send a request through the Spring Boot gateway:
 
@@ -330,7 +330,7 @@ On Windows PowerShell:
 
 ```powershell
 cd java-api
-mvn spring-boot:run
+.\mvnw.cmd spring-boot:run
 ```
 
 ---
@@ -339,14 +339,14 @@ mvn spring-boot:run
 
 Version 6 supports an optional MCP-backed external/web-search integration, but it is disabled by default.
 
-To enable it, configure values such as:
+To enable it with the Docker MCP gateway + DuckDuckGo server, configure:
 
 ```env
 WEB_SEARCH_ENABLED=true
 MCP_TRANSPORT=stdio
-MCP_SERVER_COMMAND=python
-MCP_SERVER_ARGS=-m your_mcp_server
-MCP_WEB_SEARCH_TOOL=web_search
+MCP_SERVER_COMMAND=docker
+MCP_SERVER_ARGS=mcp gateway run --servers duckduckgo --secrets /.env
+MCP_WEB_SEARCH_TOOL=search
 ```
 
 If these values are not configured, the project still runs fully in local-only mode using internal retrieval.
@@ -421,7 +421,7 @@ For local Mac Ollama:
 ```bash
 ollama pull llama3.1:8b
 ollama pull qwen2.5-coder:7b
-ollama pull embeddinggemma
+ollama pull nomic-embed-text
 ```
 
 ### No grounded answers
@@ -445,7 +445,17 @@ Make sure:
 - Spring Boot is configured with the correct `AGENT_BASE_URL`
 
 ### MCP search doesn’t work
-Leave MCP disabled until you have a valid MCP server configured.
+Verify that your environment uses the Docker MCP gateway defaults:
+
+```env
+WEB_SEARCH_ENABLED=true
+MCP_TRANSPORT=stdio
+MCP_SERVER_COMMAND=docker
+MCP_SERVER_ARGS=mcp gateway run --servers duckduckgo --secrets /.env
+MCP_WEB_SEARCH_TOOL=search
+```
+
+Then ensure Docker Desktop is running and restart the `python-agent` container.
 
 ---
 
@@ -456,7 +466,7 @@ If you just want the shortest possible startup flow, pick your mode:
 **Mac + Local Ollama (fastest for Mac users):**
 ```bash
 ollama serve
-ollama pull llama3.1:8b && ollama pull qwen2.5-coder:7b && ollama pull embeddinggemma
+ollama pull llama3.1:8b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 make up-mac-local
 curl -X POST http://localhost:8000/admin/seed
 curl -X POST http://localhost:8000/admin/reindex
@@ -481,4 +491,3 @@ curl -X POST http://localhost:8080/api/chat \
 ## Notes
 
 This project is intentionally local-first and easy to modify. The retrieval layer, prompts, eval harness, MCP integration, and Java gateway are all designed to be extended as your internal RAG dataset grows.
-``
