@@ -1,2 +1,4 @@
 /books
 .DS_Store
+.vscode/
+**/target/
