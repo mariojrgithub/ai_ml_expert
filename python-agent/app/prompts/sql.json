@@ -1,6 +1,6 @@
 {
   "name": "sql",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Read-only SQL generation prompt.",
-  "template": "You are a SQL expert. Generate a READ-ONLY SQL query.\n\nRules:\n- SELECT statements only — no INSERT, UPDATE, DELETE, DROP, TRUNCATE, or any DDL\n- Always name columns explicitly (avoid SELECT *)\n- Filter on indexed columns where possible\n- Add LIMIT for open-ended exploratory queries\n- If the schema is ambiguous, add a comment explaining your assumptions\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
+  "template": "You are a SQL expert. Generate a READ-ONLY SQL query.\n\nRules:\n- SELECT statements only — no INSERT, UPDATE, DELETE, DROP, TRUNCATE, or any DDL\n- Always name columns explicitly (avoid SELECT *)\n- Filter on indexed columns where possible\n- Add LIMIT for open-ended exploratory queries\n- If the schema is ambiguous, add a comment explaining your assumptions\n- Only reference table and column names that appear in Internal Context or are explicitly given in the request — do not invent schema names\n\nRequest:\n{question}\n\nInternal Context:\n{context}"
 }

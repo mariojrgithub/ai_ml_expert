@@ -102,6 +102,35 @@ def _looks_like_code_request(text: str) -> bool:
     return text.startswith("how do i code") or text.startswith("how to code")
 
 
+def _intent_confidence(text: str, intent: str, domain: str) -> float:
+    """Estimate classification confidence from signal strength.
+
+    Returns a float in [0.0, 1.0]:
+    - MONGO/SQL with explicit syntax signals → high (0.95)
+    - CODE with explicit "write code" markers → high (0.90)
+    - CODE detected only by start-of-string heuristic → medium (0.70)
+    - QA with a recognisable subject domain → medium-high (0.80)
+    - QA with no domain signals → lower (0.60)
+    """
+    if intent == "MONGO":
+        # Syntax-level signals are very reliable
+        if "aggregate(" in text or "find(" in text:
+            return 0.95
+        return 0.88
+    if intent == "SQL":
+        if "select " in text:
+            return 0.95
+        return 0.88
+    if intent == "CODE":
+        if any(marker in text for marker in _CODE_REQUEST_MARKERS):
+            return 0.90
+        return 0.70  # triggered by start-of-string heuristic only
+    # QA
+    if domain != "general":
+        return 0.80
+    return 0.60
+
+
 def classify_intent(message: str) -> Dict[str, Any]:
     text = message.lower()
     intent = "QA"
@@ -120,10 +149,16 @@ def classify_intent(message: str) -> Dict[str, Any]:
         # QA — detect subject domain so the reranker can boost relevant book chunks
         domain = _detect_subject_domain(text)
 
+    confidence = _intent_confidence(text, intent, domain)
+    # Flag as ambiguous when the model is less certain — callers can choose to
+    # prompt for clarification or apply extra hedging in the system prompt.
+    ambiguity_flag = confidence < 0.75
+
     return {
         "intent": intent,
         "domain": domain,
-        "confidence": 0.85,
+        "confidence": confidence,
+        "ambiguity_flag": ambiguity_flag,
     }
 
 

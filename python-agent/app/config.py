@@ -15,5 +15,13 @@ class Settings(BaseSettings):
     mcp_server_args: str = ''
     mcp_web_search_tool: str = 'web_search'
     agent_port: int = 8000
+    # Retrieval quality controls
+    min_retrieval_similarity: float = 0.25
+    # Response checker thresholds
+    checker_relevance_threshold: float = 0.15
+    checker_groundedness_threshold: float = 0.50
+    max_revision_attempts: int = 2
+    # Session memory
+    session_memory_ttl_minutes: int = 30
 
 settings = Settings()

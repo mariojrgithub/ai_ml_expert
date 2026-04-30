@@ -3,3 +3,7 @@
 .DS_Store
 .vscode/
 **/target/
+**/__pycache__/
+**/*.pyc
+
+**/evals/reports
