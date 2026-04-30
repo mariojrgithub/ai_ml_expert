@@ -1,6 +1,7 @@
 from time import perf_counter
 from typing import Any, Callable, Dict
 
+
 def timed_node(name: str, node_fn: Callable[[Dict[str, Any]], Dict[str, Any]], state: Dict[str, Any]) -> Dict[str, Any]:
     start = perf_counter()
     try:
@@ -9,6 +10,7 @@ def timed_node(name: str, node_fn: Callable[[Dict[str, Any]], Dict[str, Any]], s
         state.setdefault('trace', []).append({
             'node': name,
             'elapsed_ms': elapsed_ms,
+            'output_keys': sorted(updates.keys()),
         })
         state.update(updates)
     except Exception as exc:

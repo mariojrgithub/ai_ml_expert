@@ -7,3 +7,5 @@
 **/*.pyc
 
 **/evals/reports
+.venv/
+venv/

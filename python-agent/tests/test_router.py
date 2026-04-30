@@ -1,4 +1,5 @@
 from app.router import classify_intent, plan_context
+from app.config import settings
 
 
 def test_classify_python_code():
@@ -14,8 +15,13 @@ def test_classify_python_factual_question_is_qa():
 
 
 def test_plan_context_marks_freshness():
-    result = plan_context("What are the latest CI/CD recommendations?", "QA")
-    assert result["needs_web_search"] is True
+    original = settings.web_search_enabled
+    settings.web_search_enabled = True
+    try:
+        result = plan_context("What are the latest CI/CD recommendations?", "QA")
+        assert result["needs_web_search"] is True
+    finally:
+        settings.web_search_enabled = original
 
 
 # ---------------------------------------------------------------------------
