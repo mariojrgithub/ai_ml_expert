@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     general_model: str = 'llama3.1:8b'
     code_model: str = 'qwen2.5-coder:7b'
     embedding_model: str = 'nomic-embed-text'
-    web_search_enabled: bool = False
+    web_search_enabled: bool = True
     mcp_transport: str = 'stdio'
     mcp_server_command: str = ''
     mcp_server_args: str = ''

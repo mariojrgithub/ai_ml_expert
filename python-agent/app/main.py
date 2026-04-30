@@ -103,7 +103,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         user_input=request.message,
     )
 
-    answer = str(result.get("validated_output") or "")
+    answer = str(result.get("final_answer") or "")
     intent = result.get("intent", "QA")
     domain = result.get("domain")
     warnings = result.get("warnings", [])
@@ -121,6 +121,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         "warnings": warnings,
         "citations": citations,
         "grounded": result.get("grounded", False),
+        "trace": result.get("trace", []),
     })
 
     meta = result.get("run_metadata", {})
@@ -183,7 +184,7 @@ async def chat_stream(request: ChatRequest):
 
                 elif event["type"] == "post":
                     state = event["state"]
-                    answer = str(state.get("validated_output") or "")
+                    answer = str(state.get("final_answer") or "")
                     warnings = state.get("warnings", [])
                     citations = state.get("citations", [])
                     run_meta = state.get("run_metadata", {})
@@ -197,6 +198,7 @@ async def chat_stream(request: ChatRequest):
                         "warnings": warnings,
                         "citations": citations,
                         "grounded": state.get("grounded", False),
+                        "trace": state.get("trace", []),
                     })
                     yield json.dumps({
                         "type": "done",

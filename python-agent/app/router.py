@@ -163,10 +163,14 @@ def classify_intent(message: str) -> Dict[str, Any]:
 
 
 def plan_context(message: str, intent: str) -> Dict[str, bool]:
+    from .config import settings  # local import avoids circular dependency
     text = message.lower()
     freshness_markers = ["latest", "current", "today", "recent", "newest"]
+    freshness_detected = any(marker in text for marker in freshness_markers)
 
     return {
         "needs_rag": intent in {"QA", "SQL", "MONGO", "CODE"},
-        "needs_web_search": any(marker in text for marker in freshness_markers),
+        # This flag is reserved for freshness-driven searches. The runtime also
+        # falls back to web search when retrieval returns no internal context.
+        "needs_web_search": settings.web_search_enabled and freshness_detected,
     }

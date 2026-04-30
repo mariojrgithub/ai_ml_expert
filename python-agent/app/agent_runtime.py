@@ -37,56 +37,165 @@ def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
     citations = [{'source': d.get('source', 'unknown'),'title': d.get('title', 'unknown'),'snippet': d.get('text', '')[:220],'similarity': d.get('similarity', 0.0),'rerank_score': d.get('rerank_score', 0.0)} for d in docs]
     return {'retrieved_docs': docs, 'citations': citations, 'retrieval_stats': {'doc_count': len(docs)}}
 
+
+def _should_run_web_search(state: Dict[str, Any]) -> bool:
+    if not settings.web_search_enabled:
+        return False
+
+    # QA should always attempt web search when enabled so the model can still
+    # answer from external context when internal retrieval is stale/irrelevant.
+    if state.get('intent') == 'QA':
+        return True
+
+    if state.get('needs_web_search', False):
+        return True
+
+    # When the vector store has no usable context, fall back to the web for
+    # knowledge-style and code-generation requests instead of failing fast.
+    if state.get('retrieved_docs'):
+        return False
+
+    return state.get('intent') in {'CODE', 'SQL', 'MONGO'}
+
 def web_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    results = run_web_search(state['user_input']) if state.get('needs_web_search', False) else []
+    should_search = _should_run_web_search(state)
+    results = run_web_search(state['user_input']) if should_search else []
     citations = list(state.get('citations', [])) + [{'source': r.get('source', 'unknown'),'title': r.get('title', 'unknown'),'snippet': r.get('snippet', ''),'url': r.get('url')} for r in results]
-    return {'external_results': results, 'citations': citations, 'external_stats': {'result_count': len(results)}}
+    return {
+        'external_results': results,
+        'citations': citations,
+        'external_stats': {'result_count': len(results)},
+        'web_search_attempted': should_search,
+    }
+
+_REVISION_HINT = (
+    "\n\n[Note: a previous attempt did not directly address the question. "
+    "Please focus your answer specifically on: {question}]"
+)
+
+
+def _effective_question(state: Dict[str, Any]) -> str:
+    """Return the question, optionally prefixed with a revision correction hint."""
+    q = state['user_input']
+    if state.get('_revision_failed'):
+        return q + _REVISION_HINT.format(question=q)
+    return q
+
 
 def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    intent = state['intent']; domain = state.get('domain'); question = state['user_input']
-    context_docs = state.get('retrieved_docs', []); context = context_to_text(context_docs); external_context = external_context_to_text(state.get('external_results', []))
-    prompt_name = 'qa'; model_name = 'general'
+    intent = state['intent']
+    domain = state.get('domain')
+    question = _effective_question(state)
+    context_docs = state.get('retrieved_docs', [])
+    context = context_to_text(context_docs)
+    external_context = external_context_to_text(state.get('external_results', []))
+    prompt_name = 'qa'
+    model_name = 'general'
+
     if intent == 'QA':
-        prompt_name = 'qa'; model_name = 'general'
         has_internal = bool(context_docs)
         has_external = bool(state.get('external_results'))
         if not (has_internal or has_external):
-            return {'draft_output': 'I could not find sufficient context to answer this confidently.', 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': False}
-        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'external_context': external_context, 'conversation_history': state.get('memory_context', '')})
+            return {
+                'draft_output': 'I could not find sufficient context to answer this confidently.',
+                'prompt_name': prompt_name,
+                'prompt_version': PROMPTS.get(prompt_name).version,
+                'model_name': model_name,
+                'grounded': False,
+            }
+        prompt = PROMPTS.render(prompt_name, {
+            'question': question,
+            'context': context,
+            'external_context': external_context,
+            'conversation_history': state.get('memory_context', ''),
+        })
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
-        return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': has_internal or has_external}
+        return {
+            'draft_output': text,
+            'prompt_name': prompt_name,
+            'prompt_version': PROMPTS.get(prompt_name).version,
+            'model_name': model_name,
+            'grounded': has_internal or has_external,
+        }
+
     elif intent == 'SQL':
-        prompt_name = 'sql'; model_name = 'general'
-        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context})
+        prompt_name = 'sql'
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context})
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
+
     elif intent == 'MONGO':
-        prompt_name = 'mongo'; model_name = 'general'
-        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context})
+        prompt_name = 'mongo'
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context})
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
+
     elif intent == 'CODE' and domain == 'java':
-        prompt_name = 'code_java'; model_name = 'code'
-        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
+        prompt_name = 'code_java'
+        model_name = 'code'
+        prompt = PROMPTS.render(prompt_name, {
+            'question': question, 'context': context, 'external_context': external_context,
+        })
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
+
     else:
-        prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python'); model_name = 'code'
-        prompt = PROMPTS.render(prompt_name, {'question': question,'context': context,'external_context': external_context})
+        prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python')
+        model_name = 'code'
+        prompt = PROMPTS.render(prompt_name, {
+            'question': question, 'context': context, 'external_context': external_context,
+        })
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
-    return {'draft_output': text, 'prompt_name': prompt_name, 'prompt_version': PROMPTS.get(prompt_name).version, 'model_name': model_name, 'grounded': bool(context_docs)}
+
+    return {
+        'draft_output': text,
+        'prompt_name': prompt_name,
+        'prompt_version': PROMPTS.get(prompt_name).version,
+        'model_name': model_name,
+        'grounded': bool(context_docs),
+    }
 
 def validate_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    intent = state['intent']; text = state.get('draft_output') or ''; warnings = list(state.get('warnings', []))
-    if intent == 'SQL': validated, new_warnings = validate_sql(text)
-    elif intent == 'MONGO': validated, new_warnings = validate_mongo(text)
-    elif intent == 'CODE': validated, new_warnings = validate_code(text, 'java' if state.get('domain') == 'java' else 'python')
-    else: validated, new_warnings = text, []
+    """Syntax and safety validation only — does NOT append citations."""
+    intent = state['intent']
+    text = state.get('draft_output') or ''
+    warnings = list(state.get('warnings', []))
+
+    if intent == 'SQL':
+        validated, new_warnings = validate_sql(text)
+    elif intent == 'MONGO':
+        validated, new_warnings = validate_mongo(text)
+    elif intent == 'CODE':
+        lang = 'java' if state.get('domain') == 'java' else 'python'
+        validated, new_warnings = validate_code(text, lang)
+    else:
+        validated, new_warnings = text, []
+
     warnings.extend(new_warnings)
-    if intent == 'QA' and not state.get('grounded', False): warnings.append('Grounded internal context not available for QA response.')
-    if state.get('needs_web_search') and settings.web_search_enabled and not state.get('external_results'): warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
+
+    if intent == 'QA' and not state.get('grounded', False):
+        warnings.append('Grounded internal context not available for QA response.')
+    if state.get('needs_web_search') and settings.web_search_enabled and not state.get('external_results'):
+        warnings.append('Freshness was requested or inferred, but no MCP web-search result was returned.')
+    if state.get('web_search_attempted') and not state.get('external_results'):
+        warnings.append('Web search was attempted, but returned no external results (or web search provider is not configured).')
+
+    return {'validated_output': validated, 'warnings': warnings}
+
+
+def format_output_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Append formatted citations to the validated output for grounded QA.
+
+    Separated from validate_node so that citation formatting runs AFTER the
+    checker has seen the clean draft \u2014 the checker always reads draft_output,
+    not validated_output.
+    """
+    intent = state['intent']
+    validated = state.get('validated_output', '')
+
     if intent == 'QA' and state.get('grounded') and state.get('citations'):
         citation_suffix = format_citations(state['citations'])
         if citation_suffix:
             validated = validated + '\n\n' + citation_suffix
-    return {'validated_output': validated, 'warnings': warnings}
+
+    return {'validated_output': validated}
 
 def checker_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Run all three quality checks and collect findings into state."""
@@ -136,6 +245,54 @@ def _memory_write(state: Dict[str, Any]) -> None:
         abstain=state.get('abstain', False),
     )
 
+
+def abstain_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Set abstain=True and overwrite output when quality is unrecoverable.
+
+    Triggers when relevance never passed AND the answer is ungrounded.
+    Returns an empty dict (no-op) when quality checks passed.
+    """
+    if not state.get('relevance_passed', True) and not state.get('grounded', False):
+        fallback = (
+            'I was unable to provide a sufficiently relevant answer for this question. '
+            'Please try rephrasing or providing more context.'
+        )
+        return {'abstain': True, 'validated_output': fallback}
+    return {}
+
+
+def memory_write_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist the current turn to session memory (side-effect node).
+
+    Always returns an empty dict — memory write is a side-effect, not a
+    state mutation.  timed_node records the latency for observability.
+    """
+    _memory_write(state)
+    return {}
+
+
+def finalize_node(state: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    """Assemble final_answer and run_metadata as the last pipeline step."""
+    final_answer = state.get('validated_output', '')
+    return {
+        'final_answer': final_answer,
+        'run_metadata': {
+            'session_id': session_id,
+            'intent': state.get('intent'),
+            'domain': state.get('domain'),
+            'prompt_name': state.get('prompt_name'),
+            'prompt_version': state.get('prompt_version'),
+            'model_name': state.get('model_name'),
+            'retrieved_doc_count': state.get('retrieval_stats', {}).get('doc_count', 0),
+            'external_result_count': state.get('external_stats', {}).get('result_count', 0),
+            'grounded': state.get('grounded', False),
+            'abstain': state.get('abstain', False),
+            'relevance_score': state.get('relevance_score', 0.0),
+            'groundedness_score': state.get('groundedness_score', 0.0),
+            'revision_count': state.get('revision_count', 0),
+        },
+    }
+
 def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
     state: Dict[str, Any] = {
         'session_id': session_id, 'user_input': user_input,
@@ -152,54 +309,49 @@ def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
     ]:
         timed_node(name, fn, state)
 
-    # Generate with relevance-check retry loop (Checker A gates revision)
+    # Generate with retry loop gated by relevance.
+    # check_relevance runs once in checker_node — we do NOT duplicate it here.
+    # On each retry we inject a hint into state so generate_node can tighten
+    # the prompt (see _REVISION_HINT below).
     for attempt in range(settings.max_revision_attempts + 1):
         state['revision_count'] = attempt
         timed_node('generate', generate_node, state)
-        rel_score, rel_passed = check_relevance(user_input, state.get('draft_output', ''))
-        if rel_passed or attempt >= settings.max_revision_attempts:
+        # Peek at relevance to decide whether to retry, without duplicating
+        # the scorer result that checker_node will produce authoritatively.
+        _draft = state.get('draft_output', '')
+        _rel_score, _rel_passed = check_relevance(user_input, _draft)
+        if _rel_passed or attempt >= settings.max_revision_attempts:
             break
+        # Flag poor relevance so generate_node can add a correction hint.
+        state['_revision_failed'] = True
 
     # Post-generation pipeline
     for name, fn in [
         ('validate', validate_node),
+        ('format_output', format_output_node),
         ('checker', checker_node),
+        ('abstain', abstain_node),
     ]:
         timed_node(name, fn, state)
 
-    # Abstain if relevance never passed and the response is ungrounded
-    if not state.get('relevance_passed', True) and not state.get('grounded', False):
-        state['abstain'] = True
-        state['validated_output'] = (
-            'I was unable to provide a sufficiently relevant answer for this question. '
-            'Please try rephrasing or providing more context.'
-        )
+    # Canonical output field — single source of truth for callers.
+    # (set by abstain_node if triggered, or kept from validate_node)
+    state['final_answer'] = state.get('validated_output', '')
 
-    _memory_write(state)
-
-    state['run_metadata'] = {
-        'session_id': session_id,
-        'intent': state.get('intent'),
-        'domain': state.get('domain'),
-        'prompt_name': state.get('prompt_name'),
-        'prompt_version': state.get('prompt_version'),
-        'model_name': state.get('model_name'),
-        'retrieved_doc_count': state.get('retrieval_stats', {}).get('doc_count', 0),
-        'external_result_count': state.get('external_stats', {}).get('result_count', 0),
-        'grounded': state.get('grounded', False),
-        'abstain': state.get('abstain', False),
-        'relevance_score': state.get('relevance_score', 0.0),
-        'groundedness_score': state.get('groundedness_score', 0.0),
-        'revision_count': state.get('revision_count', 0),
-    }
+    timed_node('memory_write', memory_write_node, state)
+    timed_node('finalize', lambda s: finalize_node(s, session_id), state)
     return state
 
 
 def _build_prompt_for_state(state: Dict[str, Any]) -> tuple[Any, str]:
-    """Return (llm, prompt_text) for streaming, without invoking the LLM."""
+    """Return (llm, prompt_text) for streaming, without invoking the LLM.
+
+    Uses _effective_question so revision hints are applied consistently
+    across both streaming and non-streaming paths.
+    """
     intent = state['intent']
     domain = state.get('domain')
-    question = state['user_input']
+    question = _effective_question(state)
     context = context_to_text(state.get('retrieved_docs', []))
     external_context = external_context_to_text(state.get('external_results', []))
 
@@ -269,24 +421,15 @@ def stream_agent_tokens(session_id: str, user_input: str) -> Generator[Dict[str,
             yield {'type': 'token', 'content': token}
         state['draft_output'] = ''.join(full_tokens)
 
-    for name, fn in [('validate', validate_node), ('checker', checker_node)]:
+    for name, fn in [
+        ('validate', validate_node),
+        ('format_output', format_output_node),
+        ('checker', checker_node),
+        ('abstain', abstain_node),
+    ]:
         timed_node(name, fn, state)
 
-    _memory_write(state)
-
-    state['run_metadata'] = {
-        'session_id': session_id,
-        'intent': state.get('intent'),
-        'domain': state.get('domain'),
-        'prompt_name': state.get('prompt_name'),
-        'prompt_version': state.get('prompt_version'),
-        'model_name': state.get('model_name'),
-        'retrieved_doc_count': state.get('retrieval_stats', {}).get('doc_count', 0),
-        'external_result_count': state.get('external_stats', {}).get('result_count', 0),
-        'grounded': state.get('grounded', False),
-        'abstain': state.get('abstain', False),
-        'relevance_score': state.get('relevance_score', 0.0),
-        'groundedness_score': state.get('groundedness_score', 0.0),
-        'revision_count': state.get('revision_count', 0),
-    }
+    state['final_answer'] = state.get('validated_output', '')
+    timed_node('memory_write', memory_write_node, state)
+    timed_node('finalize', lambda s: finalize_node(s, session_id), state)
     yield {'type': 'post', 'state': state}
