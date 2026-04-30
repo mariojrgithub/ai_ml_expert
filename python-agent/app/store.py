@@ -30,6 +30,10 @@ def book_chunks_collection() -> Collection:
     return db["book_chunks"]
 
 
+def sessions_collection() -> Collection:
+    return db["sessions"]
+
+
 def ensure_indexes() -> None:
     documents_collection().create_index([("title", TEXT), ("content", TEXT), ("domain", TEXT)])
     chunks_collection().create_index([("title", TEXT), ("text", TEXT), ("domain", TEXT)])
@@ -39,7 +43,11 @@ def ensure_indexes() -> None:
     )
     book_chunks_collection().create_index("source_type", name="source_type_idx")
     executions_collection().create_index("createdAt")
-    eval_runs_collection().create_index("createdAt")
+    executions_collection().create_index('grounded', name='exec_grounded_idx')
+    eval_runs_collection().create_index('createdAt')
+    # Sessions: unique by session_id + TTL expiry index for automatic cleanup.
+    sessions_collection().create_index('session_id', unique=True, name='session_id_idx')
+    sessions_collection().create_index('ttl_expires', expireAfterSeconds=0, name='session_ttl_idx')
 
 
 def seed_sample_documents() -> int:
@@ -138,3 +146,69 @@ def save_eval_run(payload: Dict[str, Any]) -> str:
     doc = {**payload, "createdAt": datetime.now(timezone.utc)}
     result = eval_runs_collection().insert_one(doc)
     return str(result.inserted_id)
+
+
+def save_session_turn(session_id: str, turn: Dict[str, Any], ttl_minutes: int = 30) -> None:
+    """Append a turn to the session document, creating it if absent.
+    The TTL index on ttl_expires will auto-delete idle sessions.
+    """
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(minutes=ttl_minutes)
+    sessions_collection().update_one(
+        {"session_id": session_id},
+        {
+            "$push": {"turns": {**turn, "createdAt": now}},
+            "$set": {"last_active": now, "ttl_expires": expires},
+            "$setOnInsert": {"session_id": session_id, "createdAt": now},
+        },
+        upsert=True,
+    )
+
+
+def load_session_turns(session_id: str) -> List[Dict[str, Any]]:
+    """Return all turns for this session, or [] if the session does not exist."""
+    doc = sessions_collection().find_one({"session_id": session_id}, {"turns": 1})
+    if doc is None:
+        return []
+    return doc.get("turns", [])
+
+
+def get_health_detail() -> Dict[str, Any]:
+    """Gather operational health metrics from MongoDB.
+
+    Returns a dict suitable for serialising to JSON.  Wraps all DB calls so a
+    transient failure returns ``{"status": "degraded", "error": ...}`` rather
+    than propagating an exception to the HTTP layer.
+    """
+    try:
+        playbook_chunks = chunks_collection().count_documents({"embedding": {"$type": "array"}})
+        book_chunks = book_chunks_collection().count_documents({"embedding": {"$type": "array"}})
+        total_execs = executions_collection().count_documents({})
+        grounded_execs = executions_collection().count_documents({"grounded": True})
+        recent = list(
+            executions_collection()
+            .find({}, {"intent": 1, "grounded": 1, "_id": 0})
+            .sort("createdAt", -1)
+            .limit(100)
+        )
+        intent_counts: Dict[str, int] = {}
+        for doc in recent:
+            k = doc.get("intent", "UNKNOWN")
+            intent_counts[k] = intent_counts.get(k, 0) + 1
+        return {
+            "status": "ok",
+            "chunks": {
+                "playbook": playbook_chunks,
+                "books": book_chunks,
+                "total": playbook_chunks + book_chunks,
+            },
+            "executions": {
+                "total": total_execs,
+                "grounded": grounded_execs,
+                "grounded_pct": round(grounded_execs / total_execs * 100, 1) if total_execs else 0.0,
+            },
+            "recent_intent_distribution": intent_counts,
+        }
+    except Exception as exc:
+        return {"status": "degraded", "error": str(exc)}

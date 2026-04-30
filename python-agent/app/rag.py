@@ -1,13 +1,33 @@
 from math import sqrt
-from typing import Dict, List, Tuple
+from time import monotonic
+from typing import Dict, List, Optional, Tuple
+from .config import settings
 from .llm import embedding_model
 from .store import all_embedded_chunks, load_chunks_without_embeddings, set_chunk_embedding
 
 # Hard character cap applied before every Ollama embed_query call.
-# Effective embedding context limits can vary by Ollama build/model metadata,
-# so keep this conservative to avoid runtime "input length exceeds context length"
-# errors while still preserving enough context for retrieval.
 _MAX_EMBED_CHARS = 1200
+
+# ---------------------------------------------------------------------------
+# In-memory chunk cache with TTL to avoid a full collection scan per request.
+# ---------------------------------------------------------------------------
+_chunk_cache: Optional[List[Dict]] = None
+_chunk_cache_ts: float = 0.0
+_CHUNK_CACHE_TTL_SECONDS = 120.0
+
+
+def _get_cached_chunks() -> List[Dict]:
+    global _chunk_cache, _chunk_cache_ts
+    if _chunk_cache is None or (monotonic() - _chunk_cache_ts) > _CHUNK_CACHE_TTL_SECONDS:
+        _chunk_cache = all_embedded_chunks()
+        _chunk_cache_ts = monotonic()
+    return _chunk_cache
+
+
+def invalidate_chunk_cache() -> None:
+    """Call after reindex to force a fresh load on the next request."""
+    global _chunk_cache
+    _chunk_cache = None
 
 # Keyword sets used by _domain_bonus() to score chunk relevance.
 # Multi-keyword matches score higher than single matches.
@@ -78,14 +98,21 @@ def rerank_docs(question: str, docs: List[Dict], limit: int = 4) -> List[Dict]:
     reranked.sort(key=lambda x: x.get('rerank_score', -1.0), reverse=True)
     return reranked[:limit]
 
-def retrieve_context(question: str, limit: int = 4) -> List[Dict]:
-    chunks = all_embedded_chunks()
+def retrieve_context(question: str, limit: int = 4,
+                     min_similarity: Optional[float] = None) -> List[Dict]:
+    threshold = min_similarity if min_similarity is not None else settings.min_retrieval_similarity
+    chunks = _get_cached_chunks()
     if not chunks: return []
     qv = embedding_model().embed_query(question[:_MAX_EMBED_CHARS]); scored = []
     for chunk in chunks:
-        enriched = dict(chunk); enriched['similarity'] = cosine_similarity(qv, chunk.get('embedding', [])); scored.append(enriched)
-    scored.sort(key=lambda x: x.get('similarity', -1.0), reverse=True)
-    top_semantic = scored[:max(limit * 2, 6)]
+        enriched = dict(chunk)
+        enriched['similarity'] = cosine_similarity(qv, chunk.get('embedding', []))
+        scored.append(enriched)
+    # Apply minimum similarity threshold before reranking to prevent low-quality
+    # docs from reaching the LLM.
+    above_threshold = [d for d in scored if d.get('similarity', -1.0) >= threshold]
+    above_threshold.sort(key=lambda x: x.get('similarity', -1.0), reverse=True)
+    top_semantic = above_threshold[:max(limit * 2, 6)]
     return rerank_docs(question, top_semantic, limit=limit)
 
 def context_to_text(docs: List[Dict]) -> str:

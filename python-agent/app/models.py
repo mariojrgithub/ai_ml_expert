@@ -18,3 +18,6 @@ class ChatResponse(BaseModel):
     language: Optional[str] = None
     warnings: List[str] = []
     citations: List[Dict[str, Any]] = []
+    abstain: bool = False
+    groundedness_score: float = 0.0
+    relevance_score: float = 0.0

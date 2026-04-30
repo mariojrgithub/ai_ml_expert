@@ -7,8 +7,12 @@ from starlette.concurrency import iterate_in_threadpool
 from .agent_runtime import run_agent_with_trace, stream_agent_tokens
 from .models import ChatRequest, ChatResponse
 from .prompt_registry import default_prompt_registry
-from .rag import reindex_embeddings
-from .store import ensure_indexes, save_execution, seed_sample_documents
+from .rag import invalidate_chunk_cache, reindex_embeddings
+from .store import (
+    ensure_indexes, save_execution, seed_sample_documents,
+    chunks_collection, book_chunks_collection, executions_collection,
+    get_health_detail,
+)
 from .evals.runner import run_all_evals
 from .evals.reporting import list_report_files
 import json
@@ -76,13 +80,21 @@ def list_prompts(_: None = Depends(require_admin_key)) -> Dict[str, Any]:
 @app.post('/admin/seed')
 def seed(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'seeded_documents': seed_sample_documents()}
 @app.post('/admin/reindex')
-def reindex(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'embedded_chunks': reindex_embeddings()}
+def reindex(_: None = Depends(require_admin_key)) -> Dict[str, Any]:
+    count = reindex_embeddings()
+    invalidate_chunk_cache()
+    return {'embedded_chunks': count}
 @app.post('/admin/evals/run')
 def run_evals(background_tasks: BackgroundTasks, _: None = Depends(require_admin_key)) -> Dict[str, Any]:
     background_tasks.add_task(run_all_evals)
     return {'status': 'running', 'message': 'Eval run started in the background. Check GET /admin/evals/reports for results.'}
 @app.get('/admin/evals/reports')
 def eval_reports(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'reports': list_report_files()}
+
+@app.get('/admin/health/detail')
+def health_detail(_: None = Depends(require_admin_key)) -> Dict[str, Any]:
+    """Operational dashboard — chunk counts and recent execution stats."""
+    return get_health_detail()
 
 @app.post("/agent/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
@@ -108,8 +120,10 @@ def chat(request: ChatRequest) -> ChatResponse:
         "language": language,
         "warnings": warnings,
         "citations": citations,
+        "grounded": result.get("grounded", False),
     })
 
+    meta = result.get("run_metadata", {})
     return ChatResponse(
         executionId=execution_id,
         intent=intent,
@@ -118,6 +132,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         language=language,
         warnings=warnings,
         citations=citations,
+        abstain=meta.get("abstain", False),
+        groundedness_score=float(meta.get("groundedness_score", 0.0)),
+        relevance_score=float(meta.get("relevance_score", 0.0)),
     )
 
 
@@ -169,6 +186,7 @@ async def chat_stream(request: ChatRequest):
                     answer = str(state.get("validated_output") or "")
                     warnings = state.get("warnings", [])
                     citations = state.get("citations", [])
+                    run_meta = state.get("run_metadata", {})
                     execution_id = save_execution({
                         "sessionId": request.sessionId,
                         "intent": intent,
@@ -178,12 +196,16 @@ async def chat_stream(request: ChatRequest):
                         "language": language,
                         "warnings": warnings,
                         "citations": citations,
+                        "grounded": state.get("grounded", False),
                     })
                     yield json.dumps({
                         "type": "done",
                         "executionId": execution_id,
                         "warnings": warnings,
                         "citations": citations,
+                        "abstain": bool(run_meta.get("abstain", False)),
+                        "groundedness_score": float(run_meta.get("groundedness_score", 0.0)),
+                        "relevance_score": float(run_meta.get("relevance_score", 0.0)),
                     }) + "\n"
         except Exception as exc:
             if not meta_sent:
