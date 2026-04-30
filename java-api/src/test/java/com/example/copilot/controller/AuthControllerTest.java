@@ -5,10 +5,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @AutoConfigureWebTestClient
+@TestPropertySource(properties = {
+        "ADMIN_USER=testadmin",
+        "ADMIN_PASS=TestPass123!"
+})
 class AuthControllerTest {
 
     @Autowired
@@ -16,10 +21,9 @@ class AuthControllerTest {
 
     @Test
     void loginSuccess_returnsToken() {
-        // Uses the default in-memory credentials: admin / changeme
         webTestClient.post().uri("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"username\":\"admin\",\"password\":\"changeme\"}")
+                .bodyValue("{\"username\":\"testadmin\",\"password\":\"TestPass123!\"}")
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody()
@@ -32,7 +36,7 @@ class AuthControllerTest {
     void loginFailure_returns401() {
         webTestClient.post().uri("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue("{\"username\":\"admin\",\"password\":\"wrong\"}")
+                .bodyValue("{\"username\":\"testadmin\",\"password\":\"wrongpassword\"}")
                 .exchange()
                 .expectStatus().isUnauthorized();
     }

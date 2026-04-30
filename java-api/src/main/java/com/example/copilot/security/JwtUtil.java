@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.UUID;
 
 @Component
 public class JwtUtil {
@@ -25,6 +26,7 @@ public class JwtUtil {
     public String generateToken(String username) {
         Date now = new Date();
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())   // jti — unique token ID for future blacklisting
                 .subject(username)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + expirationMs))
@@ -34,6 +36,11 @@ public class JwtUtil {
 
     public String extractUsername(String token) {
         return parseClaims(token).getSubject();
+    }
+
+    /** Returns the token's unique ID (jti), used for blacklisting on logout. */
+    public String extractJti(String token) {
+        return parseClaims(token).getId();
     }
 
     public boolean validateToken(String token) {

@@ -2,6 +2,9 @@ package com.example.copilot.config;
 
 import com.example.copilot.security.JwtAuthenticationFilter;
 import com.example.copilot.security.JwtUtil;
+import com.example.copilot.security.ProblemDetailAccessDeniedHandler;
+import com.example.copilot.security.ProblemDetailAuthenticationEntryPoint;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -24,6 +27,12 @@ import java.util.List;
 @EnableWebFluxSecurity
 public class SecurityConfig {
 
+    private final CorsProperties corsProperties;
+
+    public SecurityConfig(CorsProperties corsProperties) {
+        this.corsProperties = corsProperties;
+    }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
@@ -45,10 +54,16 @@ public class SecurityConfig {
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http,
-                                                         JwtAuthenticationFilter jwtFilter) {
+                                                         JwtAuthenticationFilter jwtFilter,
+                                                         ObjectMapper objectMapper) {
         return http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint(
+                                new ProblemDetailAuthenticationEntryPoint(objectMapper))
+                        .accessDeniedHandler(
+                                new ProblemDetailAccessDeniedHandler(objectMapper)))
                 .authorizeExchange(auth -> auth
                         // Public endpoints
                         .pathMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
@@ -66,7 +81,7 @@ public class SecurityConfig {
 
     private CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+        config.setAllowedOrigins(corsProperties.getAllowedOrigins());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);

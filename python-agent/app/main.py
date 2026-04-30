@@ -1,5 +1,8 @@
 from typing import Any, Dict
-from fastapi import BackgroundTasks, FastAPI
+import os
+import secrets
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 from starlette.concurrency import iterate_in_threadpool
 from .agent_runtime import run_agent_with_trace, stream_agent_tokens
 from .models import ChatRequest, ChatResponse
@@ -13,6 +16,28 @@ from fastapi.responses import StreamingResponse
 
 
 app = FastAPI(title='Engineering Copilot Agent', version='0.0.6')
+
+# -------------------------------------------------------------------
+# Admin API-key auth
+# The ADMIN_API_KEY env var must be set; the service will reject any
+# request to /admin/* that does not supply it in the X-Admin-Api-Key
+# header.
+# -------------------------------------------------------------------
+_ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
+_admin_key_header = APIKeyHeader(name="X-Admin-Api-Key", auto_error=False)
+
+
+def require_admin_key(api_key: str | None = Security(_admin_key_header)) -> None:
+    if not _ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ADMIN_API_KEY is not configured on this server.",
+        )
+    if not api_key or not secrets.compare_digest(api_key, _ADMIN_API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing X-Admin-Api-Key header.",
+        )
 
 _DOMAIN_TO_LANGUAGE: Dict[str, str] = {
     "java":          "java",
@@ -46,18 +71,18 @@ def startup() -> None: ensure_indexes()
 @app.get('/health')
 def health() -> Dict[str, str]: return {'status': 'ok'}
 @app.get('/admin/prompts')
-def list_prompts() -> Dict[str, Any]:
+def list_prompts(_: None = Depends(require_admin_key)) -> Dict[str, Any]:
     registry = default_prompt_registry(); return {'prompts': list(registry.names()), 'versions': registry.version_map()}
 @app.post('/admin/seed')
-def seed() -> Dict[str, Any]: return {'seeded_documents': seed_sample_documents()}
+def seed(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'seeded_documents': seed_sample_documents()}
 @app.post('/admin/reindex')
-def reindex() -> Dict[str, Any]: return {'embedded_chunks': reindex_embeddings()}
+def reindex(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'embedded_chunks': reindex_embeddings()}
 @app.post('/admin/evals/run')
-def run_evals(background_tasks: BackgroundTasks) -> Dict[str, Any]:
+def run_evals(background_tasks: BackgroundTasks, _: None = Depends(require_admin_key)) -> Dict[str, Any]:
     background_tasks.add_task(run_all_evals)
     return {'status': 'running', 'message': 'Eval run started in the background. Check GET /admin/evals/reports for results.'}
 @app.get('/admin/evals/reports')
-def eval_reports() -> Dict[str, Any]: return {'reports': list_report_files()}
+def eval_reports(_: None = Depends(require_admin_key)) -> Dict[str, Any]: return {'reports': list_report_files()}
 
 @app.post("/agent/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:

@@ -39,6 +39,7 @@ services:
       MCP_SERVER_ARGS: ${MCP_SERVER_ARGS:-}
       MCP_WEB_SEARCH_TOOL: ${MCP_WEB_SEARCH_TOOL:-web_search}
       AGENT_PORT: 8000
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
     depends_on:
       - mongo
     # host.docker.internal resolves automatically on Docker Desktop (Mac/Windows).
@@ -61,6 +62,11 @@ services:
     environment:
       AGENT_BASE_URL: http://python-agent:8000
       SERVER_PORT: 8080
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-3600000}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8501}
     depends_on:
       python-agent:
         condition: service_healthy
