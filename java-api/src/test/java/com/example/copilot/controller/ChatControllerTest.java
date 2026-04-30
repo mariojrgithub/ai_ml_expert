@@ -4,40 +4,44 @@ import com.example.copilot.dto.ChatResponse;
 import com.example.copilot.service.AgentGatewayService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockUser;
 
-@WebFluxTest(ChatController.class)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
+@AutoConfigureWebTestClient
+@TestPropertySource(properties = {
+        "ADMIN_USER=testadmin",
+        "ADMIN_PASS=TestPass123!"
+})
 class ChatControllerTest {
 
     @Autowired
     private WebTestClient webTestClient;
 
-    @MockBean
+    @MockitoBean
     private AgentGatewayService agentGatewayService;
 
     @Test
     void shouldForwardChatRequest() {
         when(agentGatewayService.chat(any()))
-                .thenReturn(new ChatResponse(
-                        "exec-1",
-                        "CODE",
-                        "code",
-                        "print('hi')",
-                        "python",
-                        List.of(),
-                        List.of()
-                ));
+                .thenReturn(Mono.just(new ChatResponse(
+                        "exec-1", "CODE", "code", "print('hi')", "python",
+                        List.of(), List.of())));
 
-        webTestClient.post().uri("/api/chat")
+        webTestClient.mutateWith(mockUser())
+                .post().uri("/api/chat")
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"sessionId\":\"s1\",\"message\":\"write python code\"}")
                 .exchange()
@@ -50,15 +54,24 @@ class ChatControllerTest {
     }
 
     @Test
+    void shouldReturn401WhenUnauthenticated() {
+        webTestClient.post().uri("/api/chat")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"sessionId\":\"s1\",\"message\":\"hello\"}")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
     void shouldStreamChatResponse() {
         when(agentGatewayService.chatStream(any()))
                 .thenReturn(Flux.just(
                         "{\"type\":\"meta\",\"format\":\"markdown\",\"language\":null,\"intent\":\"QA\"}",
                         "{\"type\":\"delta\",\"content\":\"Hello\"}",
-                        "{\"type\":\"done\",\"warnings\":[],\"citations\":[]}"
-                ));
+                        "{\"type\":\"done\",\"warnings\":[],\"citations\":[]}"));
 
-        webTestClient.post().uri("/api/chat/stream")
+        webTestClient.mutateWith(mockUser())
+                .post().uri("/api/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"sessionId\":\"s1\",\"message\":\"What are CI/CD guardrails?\"}")
                 .exchange()

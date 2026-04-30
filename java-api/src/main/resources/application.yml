@@ -4,6 +4,18 @@ server:
 agent:
   base-url: ${AGENT_BASE_URL:http://localhost:8000}
 
+cors:
+  # Comma-separated list of allowed origins. Set ALLOWED_ORIGINS in your environment.
+  # Example: ALLOWED_ORIGINS=http://localhost:8501,https://app.example.com
+  allowed-origins: ${ALLOWED_ORIGINS:http://localhost:8501}
+
+security:
+  jwt:
+    # JWT_SECRET is required. The application will not start without it.
+    # Generate a strong value with: openssl rand -hex 32
+    secret: ${JWT_SECRET}
+    expiration-ms: ${JWT_EXPIRATION_MS:3600000}   # 1 hour
+
 spring:
   main:
     web-application-type: reactive

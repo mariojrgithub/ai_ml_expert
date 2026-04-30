@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from typing import Any, Dict, Generator, List
 
@@ -18,6 +19,7 @@ import streamlit as st
 _API_BASE = os.environ.get("API_BASE_URL", "http://api:8080")
 API_URL = f"{_API_BASE}/api/chat"
 STREAM_URL = f"{_API_BASE}/api/chat/stream"
+LOGIN_URL = f"{_API_BASE}/api/auth/login"
 
 st.set_page_config(
     page_title="Engineering Copilot",
@@ -25,11 +27,18 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Engineering Copilot")
-
 # -------------------------------------------------------------------
 # Session state
 # -------------------------------------------------------------------
+if "auth_token" not in st.session_state:
+    st.session_state.auth_token = None
+
+if "auth_expires_at" not in st.session_state:
+    st.session_state.auth_expires_at = 0.0
+
+if "auth_username" not in st.session_state:
+    st.session_state.auth_username = ""
+
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
@@ -45,12 +54,87 @@ if "show_citations" not in st.session_state:
 if "show_warnings" not in st.session_state:
     st.session_state.show_warnings = True
 
+
+# -------------------------------------------------------------------
+# Auth helpers
+# -------------------------------------------------------------------
+def _auth_headers() -> Dict[str, str]:
+    """Return Authorization header dict if a token is present."""
+    if st.session_state.auth_token:
+        return {"Authorization": f"Bearer {st.session_state.auth_token}"}
+    return {}
+
+
+def _token_is_valid() -> bool:
+    """True if a token exists and has not expired (with 30 s grace)."""
+    return (
+        bool(st.session_state.auth_token)
+        and time.time() < st.session_state.auth_expires_at - 30
+    )
+
+
+def _clear_auth() -> None:
+    st.session_state.auth_token = None
+    st.session_state.auth_expires_at = 0.0
+    st.session_state.auth_username = ""
+
+
+def do_login(username: str, password: str) -> bool:
+    """POST to /api/auth/login; store the returned JWT. Returns True on success."""
+    try:
+        resp = requests.post(
+            LOGIN_URL,
+            json={"username": username, "password": password},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            token = data.get("token") or data.get("accessToken") or data.get("access_token")
+            if token:
+                # The API returns expiresIn (ms) or we default to 1 hour
+                expires_in_ms = data.get("expiresIn", 3_600_000)
+                st.session_state.auth_token = token
+                st.session_state.auth_expires_at = time.time() + expires_in_ms / 1000.0
+                st.session_state.auth_username = username
+                return True
+        return False
+    except requests.RequestException:
+        return False
+
+
+# -------------------------------------------------------------------
+# Login gate — show login page if not authenticated
+# -------------------------------------------------------------------
+if not _token_is_valid():
+    _clear_auth()
+    st.title("Engineering Copilot — Sign In")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In")
+        if submitted:
+            if do_login(username, password):
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+    st.stop()
+
+
+st.title("Engineering Copilot")
+
 # -------------------------------------------------------------------
 # Sidebar
 # -------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
+    st.write(f"Signed in as: **{st.session_state.auth_username}**")
     st.write(f"Session ID: `{st.session_state.session_id}`")
+
+    if st.button("Sign Out"):
+        _clear_auth()
+        st.rerun()
+
+    st.divider()
 
     st.session_state.streaming_enabled = st.toggle(
         "Enable streaming",
@@ -98,9 +182,13 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
     with requests.post(
         STREAM_URL,
         json={"sessionId": session_id, "message": prompt},
+        headers=_auth_headers(),
         stream=True,
         timeout=300,
     ) as response:
+        if response.status_code == 401:
+            _clear_auth()
+            st.rerun()
         response.raise_for_status()
         decoder = json.JSONDecoder()
         buffer = ""
@@ -146,8 +234,12 @@ def call_non_streaming(session_id: str, prompt: str) -> Dict[str, Any]:
     response = requests.post(
         API_URL,
         json={"sessionId": session_id, "message": prompt},
+        headers=_auth_headers(),
         timeout=300,
     )
+    if response.status_code == 401:
+        _clear_auth()
+        st.rerun()
     response.raise_for_status()
     return response.json()
 
