@@ -32,8 +32,47 @@ def memory_read_node(state: Dict[str, Any]) -> Dict[str, Any]:
     turns, memory_context = read_session_memory(state['session_id'])
     return {'conversation_history': turns, 'memory_context': memory_context}
 
+
+_QUERY_REWRITE_TEMPLATE = (
+    "You are a search query optimizer. Given a conversation history and a follow-up "
+    "question, rewrite the follow-up question as a concise, standalone search query "
+    "that captures the user's intent without requiring prior context. "
+    "Output ONLY the rewritten query — no explanation, no preamble.\n\n"
+    "Conversation history:\n{history}\n\n"
+    "Follow-up question: {question}\n\n"
+    "Standalone search query:"
+)
+
+_MIN_HISTORY_TURNS_FOR_REWRITE = 1  # only rewrite when there is prior context
+
+
+def query_rewrite_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite a conversational follow-up into a standalone retrieval query.
+
+    Only triggers when conversation history exists; otherwise returns the
+    original user_input unchanged to avoid unnecessary LLM calls.
+    """
+    history = state.get('memory_context', '').strip()
+    if not history or len(state.get('conversation_history', [])) < _MIN_HISTORY_TURNS_FOR_REWRITE:
+        return {'retrieval_query': state['user_input']}
+
+    prompt = _QUERY_REWRITE_TEMPLATE.format(
+        history=history[:1500],
+        question=state['user_input'],
+    )
+    try:
+        rewritten = general_llm().invoke([HumanMessage(content=prompt)]).content.strip()
+        # Sanity check: if the model returns something suspiciously long or empty, fall back.
+        if not rewritten or len(rewritten) > 500:
+            rewritten = state['user_input']
+    except Exception:
+        rewritten = state['user_input']
+
+    return {'retrieval_query': rewritten}
+
 def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    docs = retrieve_context(state['user_input']) if state.get('needs_rag', True) else []
+    query = state.get('retrieval_query') or state['user_input']
+    docs = retrieve_context(query) if state.get('needs_rag', True) else []
     citations = [{'source': d.get('source', 'unknown'),'title': d.get('title', 'unknown'),'snippet': d.get('text', '')[:220],'similarity': d.get('similarity', 0.0),'rerank_score': d.get('rerank_score', 0.0)} for d in docs]
     return {'retrieved_docs': docs, 'citations': citations, 'retrieval_stats': {'doc_count': len(docs)}}
 
@@ -304,6 +343,7 @@ def run_agent_with_trace(session_id: str, user_input: str) -> Dict[str, Any]:
         ('route_intent', route_intent_node),
         ('context_plan', context_plan_node),
         ('memory_read', memory_read_node),
+        ('query_rewrite', query_rewrite_node),
         ('retrieve', retrieve_node),
         ('web_search', web_search_node),
     ]:
@@ -395,6 +435,7 @@ def stream_agent_tokens(session_id: str, user_input: str) -> Generator[Dict[str,
         ('route_intent', route_intent_node),
         ('context_plan', context_plan_node),
         ('memory_read', memory_read_node),
+        ('query_rewrite', query_rewrite_node),
         ('retrieve', retrieve_node),
         ('web_search', web_search_node),
     ]:

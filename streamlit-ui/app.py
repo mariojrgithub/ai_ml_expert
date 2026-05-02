@@ -179,10 +179,11 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
     Streams NDJSON frames from the Java gateway (delivered via SSE).
     Each SSE event carries one JSON object with type: 'meta' | 'delta' | 'done'.
     """
+    correlation_id = str(uuid.uuid4())
     with requests.post(
         STREAM_URL,
         json={"sessionId": session_id, "message": prompt},
-        headers=_auth_headers(),
+        headers={**_auth_headers(), "X-Correlation-ID": correlation_id},
         stream=True,
         timeout=300,
     ) as response:
@@ -190,8 +191,6 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
             _clear_auth()
             st.rerun()
         response.raise_for_status()
-        decoder = json.JSONDecoder()
-        buffer = ""
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
@@ -202,39 +201,28 @@ def stream_gateway_response(session_id: str, prompt: str) -> Generator[Dict, Non
             if not line:
                 continue
 
-            buffer += line
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-            # Some gateway paths concatenate multiple JSON objects in one chunk.
-            while buffer:
-                stripped = buffer.lstrip()
-                if not stripped:
-                    buffer = ""
-                    break
-
+            # Guard against Jackson double-encoding (String wrapped in JSON quotes)
+            if isinstance(parsed, str):
                 try:
-                    parsed, end_idx = decoder.raw_decode(stripped)
+                    parsed = json.loads(parsed)
                 except json.JSONDecodeError:
-                    # Need more bytes to decode the next object.
-                    break
+                    continue
 
-                buffer = stripped[end_idx:]
-
-                # Guard against Jackson double-encoding (String wrapped in JSON quotes)
-                if isinstance(parsed, str):
-                    try:
-                        parsed = json.loads(parsed)
-                    except json.JSONDecodeError:
-                        continue
-
-                if isinstance(parsed, dict):
-                    yield parsed
+            if isinstance(parsed, dict):
+                yield parsed
 
 
 def call_non_streaming(session_id: str, prompt: str) -> Dict[str, Any]:
+    correlation_id = str(uuid.uuid4())
     response = requests.post(
         API_URL,
         json={"sessionId": session_id, "message": prompt},
-        headers=_auth_headers(),
+        headers={**_auth_headers(), "X-Correlation-ID": correlation_id},
         timeout=300,
     )
     if response.status_code == 401:
@@ -313,7 +301,7 @@ if prompt:
                 saw_done = False
 
                 placeholder = st.empty()
-                placeholder.info("🤔 Generating response...")
+                placeholder.info("⏳ Routing your request...")
 
                 for frame in stream_gateway_response(
                     st.session_state.session_id,
@@ -324,6 +312,13 @@ if prompt:
                     if frame_type == "meta":
                         fmt = frame.get("format", "markdown")
                         language = frame.get("language")
+                        intent = frame.get("intent", "")
+                        if intent in ("QA",):
+                            placeholder.info("🔍 Retrieving context...")
+                        elif intent in ("CODE", "SQL", "MONGO"):
+                            placeholder.info(f"⚙️ Generating {intent} response...")
+                        else:
+                            placeholder.info("🧠 Generating response...")
 
                     elif frame_type == "delta":
                         if not accumulated:  # First chunk, clear loading message
@@ -381,12 +376,15 @@ if prompt:
                 }
 
             except Exception as ex:
-                error_text = f"Streaming failed: {ex}"
-                st.error(error_text)
+                error_id = str(uuid.uuid4())[:8]
+                st.error(
+                    f"Something went wrong while generating the response. "
+                    f"Please try again. (Error ID: `{error_id}`)"
+                )
 
                 assistant_msg = {
                     "role": "assistant",
-                    "content": error_text,
+                    "content": f"[Error ID: {error_id}] A streaming error occurred.",
                     "format": "text",
                     "language": None,
                     "warnings": ["Streaming request failed."],

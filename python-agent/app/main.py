@@ -1,12 +1,15 @@
 from typing import Any, Dict
+import logging
 import os
 import secrets
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Security, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 from starlette.concurrency import iterate_in_threadpool
 from .agent_runtime import run_agent_with_trace, stream_agent_tokens
+from .llm import code_llm, embedding_model, general_llm
 from .models import ChatRequest, ChatResponse
 from .prompt_registry import default_prompt_registry
+from .sanitizer import PromptInjectionError, sanitize_user_input
 from .rag import invalidate_chunk_cache, reindex_embeddings
 from .store import (
     ensure_indexes, save_execution, seed_sample_documents,
@@ -20,6 +23,8 @@ from fastapi.responses import StreamingResponse
 
 
 app = FastAPI(title='Engineering Copilot Agent', version='0.0.6')
+
+log = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------
 # Admin API-key auth
@@ -70,8 +75,19 @@ def resolve_format_and_language(intent: str, domain: str | None):
     language = _DOMAIN_TO_LANGUAGE.get(domain or "", None) if fmt == "code" else None
     return fmt, language
 
+_PLACEHOLDER_PREFIX = "CHANGE_ME"
+
 @app.on_event('startup')
-def startup() -> None: ensure_indexes()
+def startup() -> None:
+    if not _ADMIN_API_KEY:
+        raise RuntimeError("ADMIN_API_KEY environment variable is not set. Set it before starting the service.")
+    if _ADMIN_API_KEY.startswith(_PLACEHOLDER_PREFIX):
+        raise RuntimeError("ADMIN_API_KEY is still set to the example placeholder. Generate a real secret with: openssl rand -hex 32")
+    ensure_indexes()
+    # Pre-warm LLM and embedding model singletons so the first request has no cold-start delay.
+    general_llm()
+    code_llm()
+    embedding_model()
 @app.get('/health')
 def health() -> Dict[str, str]: return {'status': 'ok'}
 @app.get('/admin/prompts')
@@ -97,10 +113,17 @@ def health_detail(_: None = Depends(require_admin_key)) -> Dict[str, Any]:
     return get_health_detail()
 
 @app.post("/agent/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, x_correlation_id: str | None = Header(default=None)) -> ChatResponse:
+    cid = x_correlation_id or secrets.token_hex(8)
+    log.info("[%s] POST /agent/chat sessionId=%s", cid, request.sessionId)
+    try:
+        sanitized_message, _ = sanitize_user_input(request.message)
+    except PromptInjectionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     result = run_agent_with_trace(
         session_id=request.sessionId,
-        user_input=request.message,
+        user_input=sanitized_message,
     )
 
     answer = str(result.get("final_answer") or "")
@@ -140,7 +163,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/agent/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest, x_correlation_id: str | None = Header(default=None)):
     """
     Streams JSON lines (NDJSON).
     Each line is a self-contained JSON object:
@@ -149,6 +172,13 @@ async def chat_stream(request: ChatRequest):
       {"type": "done",  "warnings": [...], "citations": [...]}
       {"type": "error", "message": "..."}      — on stream failure
     """
+    try:
+        sanitized_message, _ = sanitize_user_input(request.message)
+    except PromptInjectionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    cid = x_correlation_id or secrets.token_hex(8)
+    log.info("[%s] POST /agent/chat/stream sessionId=%s", cid, request.sessionId)
 
     def generator():
         meta_sent = False
@@ -160,7 +190,7 @@ async def chat_stream(request: ChatRequest):
         try:
             for event in stream_agent_tokens(
                 session_id=request.sessionId,
-                user_input=request.message,
+                user_input=sanitized_message,
             ):
                 if event["type"] == "pre":
                     state = event["state"]
