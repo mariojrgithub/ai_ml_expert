@@ -1,6 +1,7 @@
 from math import sqrt
 from time import monotonic
 from typing import Dict, List, Optional, Tuple
+from collections import OrderedDict
 import numpy as np
 from .config import settings
 from .llm import embedding_model
@@ -35,6 +36,26 @@ def invalidate_chunk_cache() -> None:
     """Call after reindex to force a fresh load on the next request."""
     global _chunk_cache
     _chunk_cache = None
+
+# ---------------------------------------------------------------------------
+# Query-embedding LRU cache — avoids a round-trip to Ollama for repeated queries.
+# Keyed on the truncated query string; evicts the least-recently-used entry
+# when the cache exceeds _EMBED_CACHE_MAX_SIZE.
+# ---------------------------------------------------------------------------
+_EMBED_CACHE_MAX_SIZE = 256
+_embed_cache: OrderedDict = OrderedDict()
+
+
+def _get_query_embedding(text: str) -> List[float]:
+    key = text[:_MAX_EMBED_CHARS]
+    if key in _embed_cache:
+        _embed_cache.move_to_end(key)
+        return _embed_cache[key]
+    vec = embedding_model().embed_query(key)
+    _embed_cache[key] = vec
+    if len(_embed_cache) > _EMBED_CACHE_MAX_SIZE:
+        _embed_cache.popitem(last=False)
+    return vec
 
 # Keyword sets used by _domain_bonus() to score chunk relevance.
 # Multi-keyword matches score higher than single matches.
@@ -147,6 +168,55 @@ def rerank_docs(question: str, docs: List[Dict], limit: int = 4) -> List[Dict]:
     reranked.sort(key=lambda x: x.get('rerank_score', -1.0), reverse=True)
     return reranked[:limit]
 
+
+# ---------------------------------------------------------------------------
+# Cross-encoder reranker — loaded lazily; falls back to rerank_docs if
+# sentence-transformers is not installed or the model cannot be loaded.
+# ---------------------------------------------------------------------------
+_CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_cross_encoder = None
+_cross_encoder_loaded = False
+
+
+def _get_cross_encoder():
+    global _cross_encoder, _cross_encoder_loaded
+    if _cross_encoder_loaded:
+        return _cross_encoder
+    try:
+        from sentence_transformers import CrossEncoder  # type: ignore
+        _cross_encoder = CrossEncoder(_CROSS_ENCODER_MODEL)
+    except Exception:
+        _cross_encoder = None
+    _cross_encoder_loaded = True
+    return _cross_encoder
+
+
+def rerank_docs_cross_encoder(question: str, docs: List[Dict], limit: int = 4) -> List[Dict]:
+    """Rerank *docs* using a cross-encoder model for higher accuracy.
+
+    Falls back to the lightweight ``rerank_docs`` scorer if the
+    cross-encoder model is unavailable (e.g. not installed or first-run
+    download fails).
+    """
+    if not docs:
+        return docs
+
+    encoder = _get_cross_encoder()
+    if encoder is None:
+        return rerank_docs(question, docs, limit)
+
+    pairs = [(question, d.get('text', '')[:512]) for d in docs]
+    scores = encoder.predict(pairs).tolist()
+
+    reranked = []
+    for d, score in zip(docs, scores):
+        enriched = dict(d)
+        enriched['rerank_score'] = round(float(score), 6)
+        reranked.append(enriched)
+
+    reranked.sort(key=lambda x: x.get('rerank_score', -1.0), reverse=True)
+    return reranked[:limit]
+
 def retrieve_context(question: str, limit: int = 4,
                      min_similarity: Optional[float] = None) -> List[Dict]:
     threshold = min_similarity if min_similarity is not None else settings.min_retrieval_similarity
@@ -154,7 +224,7 @@ def retrieve_context(question: str, limit: int = 4,
     if not chunks:
         return []
 
-    qv = embedding_model().embed_query(question[:_MAX_EMBED_CHARS])
+    qv = _get_query_embedding(question)
 
     # Batch cosine similarity — single numpy matrix op instead of a Python loop.
     similarities = _batch_cosine_similarities(qv, chunks)
@@ -166,7 +236,7 @@ def retrieve_context(question: str, limit: int = 4,
     ]
     scored.sort(key=lambda x: x['similarity'], reverse=True)
     top_semantic = scored[:max(limit * 2, 6)]
-    return rerank_docs(question, top_semantic, limit=limit)
+    return rerank_docs_cross_encoder(question, top_semantic, limit=limit)
 
 def context_to_text(docs: List[Dict]) -> str:
     if not docs: return 'No internal context found.'

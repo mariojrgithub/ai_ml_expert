@@ -1,13 +1,33 @@
+from time import monotonic
 from typing import Dict, List
 
 from .mcp.client import build_mcp_provider
 
 _MAX_SNIPPET_CHARS = 500
 
+# ---------------------------------------------------------------------------
+# Web-search result cache — avoids redundant MCP calls for repeated queries.
+# TTL-based: entries older than _WEB_CACHE_TTL_SECONDS are discarded.
+# ---------------------------------------------------------------------------
+_WEB_CACHE_TTL_SECONDS = 300.0  # 5 minutes
+_web_cache: Dict[str, tuple] = {}  # key -> (timestamp, results)
+
 
 def run_web_search(query: str) -> List[Dict]:
+    now = monotonic()
+    entry = _web_cache.get(query)
+    if entry is not None:
+        ts, results = entry
+        if (now - ts) < _WEB_CACHE_TTL_SECONDS:
+            return results
+
     provider = build_mcp_provider()
-    return [] if provider is None else provider.search(query=query, limit=3)
+    try:
+        results = [] if provider is None else provider.search(query=query, limit=3)
+    except Exception:
+        results = []
+    _web_cache[query] = (now, results)
+    return results
 
 
 def _truncate_snippet(snippet: str) -> str:
