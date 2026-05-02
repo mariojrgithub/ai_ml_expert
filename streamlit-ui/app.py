@@ -232,18 +232,33 @@ def call_non_streaming(session_id: str, prompt: str) -> Dict[str, Any]:
     return response.json()
 
 
-def render_content(fmt: str, content: Any, language: str | None):
+def render_content(fmt: str, content: Any, language: str | None, *, container=None):
+    """Render content in the given container (defaults to the main page).
+
+    When fmt='code', the LLM typically returns a full markdown document that
+    wraps the code in triple-backtick fences together with prose sections.
+    In that case we fall back to markdown so the formatting is preserved.
+    Pure bare-code strings (no fences) still use st.code for syntax highlighting.
+    """
+    out = container if container is not None else st
     if fmt == "markdown":
-        st.markdown(content)
+        out.markdown(content)
     elif fmt == "code":
-        st.code(content, language=language or "python")
+        # LLM-generated code responses contain markdown structure (headers + fences).
+        # Render as markdown so fences and prose display correctly.
+        if isinstance(content, str) and "```" in content:
+            out.markdown(content)
+        else:
+            out.code(content, language=language or "python")
     elif fmt == "json":
         try:
-            st.json(json.loads(content) if isinstance(content, str) else content)
+            parsed = json.loads(content) if isinstance(content, str) else content
+            # st.empty() placeholders don't support .json(); always use main page
+            st.json(parsed)
         except Exception:
-            st.code(content, language="json")
+            out.code(content, language="json")
     else:
-        st.text(str(content))
+        out.text(str(content))
 
 
 # -------------------------------------------------------------------
@@ -338,23 +353,24 @@ if prompt:
                         stream_error = frame.get("message", "Streaming failed.")
                         break
 
-                # Replace live preview with final rendered content
-                placeholder.empty()
+                # Replace the live-preview cursor with the final rendered content.
+                # We reuse the placeholder widget so the content stays in the correct
+                # DOM position and the cursor (▌) is cleanly replaced.
                 if stream_error:
-                    st.error(stream_error)
+                    placeholder.error(stream_error)
                     warnings = warnings + ["Streaming returned an error frame."]
                     accumulated = stream_error
                     fmt = "text"
                     language = None
                 elif not accumulated and not saw_done:
                     fallback = "No output was produced by the stream."
-                    st.warning(fallback)
+                    placeholder.warning(fallback)
                     warnings = warnings + [fallback]
                     accumulated = fallback
                     fmt = "text"
                     language = None
                 else:
-                    render_content(fmt, accumulated, language)
+                    render_content(fmt, accumulated, language, container=placeholder)
 
                 if st.session_state.show_warnings and warnings:
                     with st.expander("Warnings", expanded=False, key="warnings_streaming"):
@@ -400,7 +416,6 @@ if prompt:
                     st.session_state.session_id,
                     prompt,
                 )
-                placeholder.empty()
 
                 content = data.get("content") or data.get("answer") or ""
                 fmt = data.get("format", "markdown")
@@ -408,7 +423,7 @@ if prompt:
                 warnings = data.get("warnings", [])
                 citations = data.get("citations", [])
 
-                render_content(fmt, content, language)
+                render_content(fmt, content, language, container=placeholder)
 
                 if st.session_state.show_warnings and warnings:
                     with st.expander("Warnings", expanded=False, key="warnings_nonstreaming"):
