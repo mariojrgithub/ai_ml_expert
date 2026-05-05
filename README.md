@@ -54,18 +54,20 @@ This starter supports:
 - trace capture and run metadata persistence
 
 The Python agent exposes endpoints such as:
-- `GET /health`
-- `GET /admin/prompts`
-- `POST /admin/seed`
-- `POST /admin/reindex`
-- `POST /admin/evals/run`  *(runs asynchronously in the background)*
-- `GET /admin/evals/reports`
+- `GET /health` *(public — no auth required)*
+- `GET /admin/prompts` *(requires `X-Admin-Api-Key` header)*
+- `POST /admin/seed` *(requires `X-Admin-Api-Key` header)*
+- `POST /admin/reindex` *(requires `X-Admin-Api-Key` header)*
+- `POST /admin/evals/run` *(runs asynchronously in the background; requires `X-Admin-Api-Key` header)*
+- `GET /admin/evals/reports` *(requires `X-Admin-Api-Key` header)*
+- `GET /admin/health/detail` *(operational dashboard — chunk counts and execution stats; requires `X-Admin-Api-Key` header)*
 - `POST /agent/chat`
 - `POST /agent/chat/stream`  *(NDJSON token stream)*
 
 The Java gateway exposes:
-- `POST /api/chat`  *(proxies to `/agent/chat`)*
-- `POST /api/chat/stream`  *(proxies to `/agent/chat/stream`, returned as NDJSON)*
+- `POST /api/auth/login` *(returns a JWT Bearer token — required for the endpoints below)*
+- `POST /api/chat`  *(proxies to `/agent/chat`; requires Bearer token)*
+- `POST /api/chat/stream`  *(proxies to `/agent/chat/stream`; returns SSE — Server-Sent Events; requires Bearer token)*
 
 ---
 
@@ -197,7 +199,7 @@ ollama pull nomic-embed-text
 After the stack is up:
 
 ```bash
-curl -X POST http://localhost:8000/admin/seed
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/seed
 ```
 
 This loads the sample internal documents into MongoDB.
@@ -205,7 +207,7 @@ This loads the sample internal documents into MongoDB.
 ### Step 4 — Generate embeddings for the sample chunks
 
 ```bash
-curl -X POST http://localhost:8000/admin/reindex
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/reindex
 ```
 
 This generates embeddings using `nomic-embed-text` and prepares the RAG dataset.
@@ -220,17 +222,28 @@ collection. The notebook uses the same `nomic-embed-text` model configured in th
 > re-run the notebook to regenerate all embeddings in the new vector space, then call
 > `POST /admin/reindex` to regenerate the internal playbook embeddings as well.
 
-### Step 6 — Test chat through the Java gateway
+### Step 6 — Authenticate and test chat through the Java gateway
 
-Send a request through the Spring Boot gateway:
+The Java gateway requires a JWT Bearer token. First obtain a token:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<your ADMIN_PASS>"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+```
+
+Then send a chat request:
 
 ```bash
 curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"sessionId":"demo-session","message":"What are the key CI/CD guardrails?"}'
 ```
 
-The Spring Boot API forwards the request to the Python agent’s `/agent/chat` endpoint.
+The Spring Boot API forwards the request to the Python agent's `/agent/chat` endpoint.
+
+> **Tip:** You can also send requests directly to the Python agent on port 8000 without authentication — useful during local development.
 
 ---
 
@@ -259,22 +272,32 @@ curl http://localhost:8000/health
 ### List prompts
 
 ```bash
-curl http://localhost:8000/admin/prompts
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/prompts
 ```
 
 ### Run evaluations
 
 ```bash
-curl -X POST http://localhost:8000/admin/evals/run
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/evals/run
 ```
+
+The eval run starts asynchronously. Dataset lives at `python-agent/app/evals/datasets/golden_eval_set.json`. Each eval case can be single-turn or multi-turn (`"multi_turn": true`). Reports are written as JSON and HTML to `python-agent/app/evals/reports/`.
 
 ### List generated eval reports
 
 ```bash
-curl http://localhost:8000/admin/evals/reports
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/evals/reports
 ```
 
-These endpoints are exposed directly by the Python agent service.
+### Operational health dashboard
+
+```bash
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/health/detail
+```
+
+All `/admin/*` endpoints require the `X-Admin-Api-Key` header matching the value of `ADMIN_API_KEY` in your environment. `GET /health` is public.
+
+> **Tip:** Set `export ADMIN_API_KEY=<your-key>` in your shell before running the commands above so you do not have to paste the key repeatedly.
 
 ---
 
@@ -353,6 +376,83 @@ If these values are not configured, the project still runs fully in local-only m
 
 ---
 
+## Session memory and conversational history
+
+The agent maintains **durable, per-session chat history** stored in MongoDB. This enables multi-turn conversations — follow-up questions like "now convert it to Java" or "add error handling" automatically inherit context from earlier turns in the same session.
+
+### How it works
+
+1. **Every user and assistant message** is persisted to the `chat_messages` collection, keyed by `sessionId`.
+2. Before each generation, the **most recent messages** are loaded and injected into the prompt via the `{conversation_history}` slot.
+3. After each successful turn, an **LLM-generated rolling summary** is stored in `chat_session_summaries`. This gives the agent a compact view of earlier context that falls outside the recent-message window.
+4. **Follow-up intent detection** — short queries (≤ 12 words) or queries containing pronouns like "it", "that", "the result" automatically inherit the intent of the previous turn (e.g., a follow-up to a SQL query keeps `intent=SQL`).
+
+### MongoDB collections
+
+| Collection | Purpose |
+|---|---|
+| `documents` | Source documents seeded via `/admin/seed` |
+| `chunks` | Chunked text from internal playbook documents (with embeddings after reindex) |
+| `book_chunks` | Chunks from externally ingested books (via notebook) |
+| `executions` | Per-request execution records (intent, answer, trace, grounding metadata) |
+| `eval_runs` | Records from eval harness runs |
+| `sessions` | Legacy per-session turn log with TTL-based auto-expiry |
+| `chat_messages` | Per-session message log (user + assistant turns; durable, no TTL) |
+| `chat_session_summaries` | Rolling LLM-generated session summary (one document per session) |
+
+### sessionId usage
+
+All chat endpoints accept a `sessionId` field. Use a consistent value across turns to maintain conversational context:
+
+```bash
+# Turn 1
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"sessionId":"my-session","message":"Write a Python function to sort a list."}'
+
+# Turn 2 — follow-up; agent will use prior context
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"sessionId":"my-session","message":"Now add type hints to it."}'
+```
+
+Or directly to the Python agent:
+
+```bash
+curl -X POST http://localhost:8000/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"my-session","message":"Write a SQL query to list users."}'
+
+curl -X POST http://localhost:8000/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"my-session","message":"Now add pagination to that query."}'
+```
+
+> **Note:** The Python agent accepts `sessionId` and `message` — the same field names as the Java gateway request body. There is no HTTP endpoint to clear a session; to start fresh simply use a new `sessionId` value.
+
+### Configuration
+
+Session memory behaviour is controlled by environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CHAT_HISTORY_ENABLED` | `true` | Enable/disable loading prior messages into context |
+| `CHAT_HISTORY_RECENT_LIMIT` | `10` | Max messages loaded per request |
+| `CHAT_HISTORY_MAX_CHARS` | `3000` | Max total characters in the conversation history block |
+| `CHAT_SUMMARY_ENABLED` | `true` | Enable/disable the rolling LLM session summary |
+| `SESSION_MEMORY_TTL_MINUTES` | `30` | TTL for legacy session turns (MongoDB TTL index) |
+
+To disable all conversational history (stateless mode):
+
+```env
+CHAT_HISTORY_ENABLED=false
+CHAT_SUMMARY_ENABLED=false
+```
+
+---
+
 ## Seeding your own books into MongoDB for RAG
 
 You can seed your own coding books as chunk documents with embeddings.
@@ -397,12 +497,16 @@ cd python-agent
 pytest -q
 ```
 
+Most Python tests stub MongoDB, Ollama, and LangChain dependencies and do not require live services. Integration tests that exercise the full agent pipeline with a real database are in `test_integration.py` and require MongoDB to be reachable.
+
 ### Java tests
 
 ```bash
 cd java-api
 ./mvnw test
 ```
+
+Java unit tests do not require the Python agent or MongoDB to be running.
 
 The project includes tests under:
 - `python-agent/tests/`
@@ -428,8 +532,8 @@ ollama pull nomic-embed-text
 Run:
 
 ```bash
-curl -X POST http://localhost:8000/admin/seed
-curl -X POST http://localhost:8000/admin/reindex
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/seed
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/reindex
 ```
 
 ### Python agent can't reach Ollama (Mac local mode)
@@ -468,10 +572,14 @@ If you just want the shortest possible startup flow, pick your mode:
 ollama serve
 ollama pull llama3.1:8b && ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
 make up-mac-local
-curl -X POST http://localhost:8000/admin/seed
-curl -X POST http://localhost:8000/admin/reindex
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/seed
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/reindex
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<your ADMIN_PASS>"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"sessionId":"demo","message":"What are the key CI/CD guardrails?"}'
 ```
 
@@ -479,10 +587,14 @@ curl -X POST http://localhost:8080/api/chat \
 ```bash
 make up-gpu        # or: make up-mac-docker
 make pull-models
-curl -X POST http://localhost:8000/admin/seed
-curl -X POST http://localhost:8000/admin/reindex
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/seed
+curl -X POST -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8000/admin/reindex
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<your ADMIN_PASS>"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"sessionId":"demo","message":"What are the key CI/CD guardrails?"}'
 ```
 

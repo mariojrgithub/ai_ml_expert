@@ -43,9 +43,41 @@ def score_case(output: str, warnings: List[str], case: Dict[str, Any], run_metad
     }
 
 def run_eval_case(case: Dict[str, Any]) -> Dict[str, Any]:
+    if case.get('multi_turn'):
+        return _run_multiturn_case(case)
     result = run_agent_with_trace(session_id=f"eval-{case['id']}", user_input=case['input'])
     answer = result.get('validated_output', ''); warnings = result.get('warnings', []); metadata = result.get('run_metadata', {})
     return {'id': case['id'], 'task_type': case.get('task_type'), 'input': case['input'], 'answer': answer, 'warnings': warnings, 'trace': result.get('trace', []), 'run_metadata': metadata, 'score': score_case(answer, warnings, case, metadata)}
+
+
+def _run_multiturn_case(case: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a multi-turn eval case sequentially, scoring only the final turn."""
+    session_id = f"eval-{case['id']}"
+    turns = case.get('turns', [])
+    if not turns:
+        return {'id': case['id'], 'task_type': case.get('task_type'), 'multi_turn': True,
+                'input': '', 'answer': '', 'warnings': [], 'trace': [], 'run_metadata': {},
+                'score': {'passed': False, 'failure_category': 'no_turns'}}
+    last_result: Dict[str, Any] = {}
+    for turn in turns:
+        last_result = run_agent_with_trace(session_id=session_id, user_input=turn['input'])
+    # Score only the final turn's output against the final turn's criteria
+    final_turn = turns[-1]
+    answer = last_result.get('validated_output', '')
+    warnings = last_result.get('warnings', [])
+    metadata = last_result.get('run_metadata', {})
+    score = score_case(answer, warnings, final_turn, metadata)
+    return {
+        'id': case['id'],
+        'task_type': case.get('task_type'),
+        'multi_turn': True,
+        'input': turns[0]['input'],
+        'answer': answer,
+        'warnings': warnings,
+        'trace': last_result.get('trace', []),
+        'run_metadata': metadata,
+        'score': score,
+    }
 
 def run_all_evals() -> Dict[str, Any]:
     cases = load_dataset(); results = [run_eval_case(case) for case in cases]

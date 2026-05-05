@@ -32,6 +32,9 @@ class AgentState(TypedDict, total=False):
     # --- Memory (populated by memory_read_node) ----------------------------
     conversation_history: List[Dict]       # EPHEMERAL  (session-scoped turns)
     memory_context: str                    # EPHEMERAL  (rendered for prompt)
+    recent_messages: List[Dict]            # EPHEMERAL  (recent chat_messages window)
+    recent_messages_count: int             # LOGGED
+    session_summary: str                   # EPHEMERAL  (rolling LLM summary)
 
     # --- Retrieved context -------------------------------------------------
     retrieved_docs: List[Dict]             # LOGGED (IDs only in persistence)

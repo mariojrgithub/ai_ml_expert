@@ -76,15 +76,19 @@ def test_score_case_includes_checker_scores_in_result():
 # load_dataset
 # ---------------------------------------------------------------------------
 
-def test_load_dataset_returns_15_cases():
+def test_load_dataset_returns_17_cases():
     cases = load_dataset()
-    assert len(cases) == 15
+    assert len(cases) == 17
 
 
 def test_load_dataset_all_have_id_and_input():
     for case in load_dataset():
         assert "id" in case
-        assert "input" in case
+        # Multi-turn cases use 'turns' instead of top-level 'input'
+        if case.get('multi_turn'):
+            assert "turns" in case
+        else:
+            assert "input" in case
 
 
 def test_load_dataset_abstain_case_exists():

@@ -3,7 +3,7 @@ from langchain_core.messages import HumanMessage
 from .checker import check_citation_sufficiency, check_groundedness, check_relevance
 from .citations import format_citations
 from .llm import general_llm, code_llm
-from .memory import read_session_memory, write_session_memory
+from .memory import read_session_memory, write_session_memory, read_recent_chat_messages, format_recent_messages_as_text, build_conversation_context, update_session_summary, get_session_summary
 from .prompt_registry import default_prompt_registry
 from .rag import retrieve_context, context_to_text
 from .router import classify_intent, plan_context
@@ -25,12 +25,20 @@ _CODE_PROMPT_MAP: Dict[str, str] = {
     "finance":       "code_finance",
 }
 
-def route_intent_node(state: Dict[str, Any]) -> Dict[str, Any]: return classify_intent(state['user_input'])
+def route_intent_node(state: Dict[str, Any]) -> Dict[str, Any]: return classify_intent(state['user_input'], state.get('recent_messages'))
 def context_plan_node(state: Dict[str, Any]) -> Dict[str, Any]: return plan_context(state['user_input'], state['intent'])
 
 def memory_read_node(state: Dict[str, Any]) -> Dict[str, Any]:
     turns, memory_context = read_session_memory(state['session_id'])
-    return {'conversation_history': turns, 'memory_context': memory_context}
+    recent_messages = read_recent_chat_messages(state['session_id'], state['user_input'])
+    session_summary = get_session_summary(state['session_id'])
+    return {
+        'conversation_history': turns,
+        'memory_context': memory_context,
+        'recent_messages': recent_messages,
+        'recent_messages_count': len(recent_messages),
+        'session_summary': session_summary,
+    }
 
 
 _QUERY_REWRITE_TEMPLATE = (
@@ -43,17 +51,25 @@ _QUERY_REWRITE_TEMPLATE = (
     "Standalone search query:"
 )
 
-_MIN_HISTORY_TURNS_FOR_REWRITE = 1  # only rewrite when there is prior context
 
 
 def query_rewrite_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Rewrite a conversational follow-up into a standalone retrieval query.
 
+    Prefers recent_messages (all turns, chat_messages collection) over the
+    legacy memory_context (grounded-only sessions) so code/SQL/Mongo follow-ups
+    also get proper query rewriting.
+
     Only triggers when conversation history exists; otherwise returns the
     original user_input unchanged to avoid unnecessary LLM calls.
     """
-    history = state.get('memory_context', '').strip()
-    if not history or len(state.get('conversation_history', [])) < _MIN_HISTORY_TURNS_FOR_REWRITE:
+    recent_messages = state.get('recent_messages') or []
+    if recent_messages:
+        history = format_recent_messages_as_text(recent_messages, max_total_chars=1500)
+    else:
+        history = state.get('memory_context', '').strip()
+
+    if not history:
         return {'retrieval_query': state['user_input']}
 
     prompt = _QUERY_REWRITE_TEMPLATE.format(
@@ -142,11 +158,13 @@ def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 'model_name': model_name,
                 'grounded': False,
             }
+        # Prefer recent_messages (all turns) over legacy grounded-only memory_context.
+        conv_history = build_conversation_context(state.get('recent_messages') or [], state.get('session_summary', '')) or state.get('memory_context', '')
         prompt = PROMPTS.render(prompt_name, {
             'question': question,
             'context': context,
             'external_context': external_context,
-            'conversation_history': state.get('memory_context', ''),
+            'conversation_history': conv_history,
         })
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
         return {
@@ -157,21 +175,23 @@ def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
             'grounded': has_internal or has_external,
         }
 
-    elif intent == 'SQL':
+    conv_history = build_conversation_context(state.get('recent_messages') or [], state.get('session_summary', '')) or state.get('memory_context', '')
+
+    if intent == 'SQL':
         prompt_name = 'sql'
-        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context})
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'conversation_history': conv_history})
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
 
     elif intent == 'MONGO':
         prompt_name = 'mongo'
-        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context})
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'conversation_history': conv_history})
         text = general_llm().invoke([HumanMessage(content=prompt)]).content
 
     elif intent == 'CODE' and domain == 'java':
         prompt_name = 'code_java'
         model_name = 'code'
         prompt = PROMPTS.render(prompt_name, {
-            'question': question, 'context': context, 'external_context': external_context,
+            'question': question, 'context': context, 'external_context': external_context, 'conversation_history': conv_history,
         })
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
 
@@ -179,7 +199,7 @@ def generate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python')
         model_name = 'code'
         prompt = PROMPTS.render(prompt_name, {
-            'question': question, 'context': context, 'external_context': external_context,
+            'question': question, 'context': context, 'external_context': external_context, 'conversation_history': conv_history,
         })
         text = code_llm().invoke([HumanMessage(content=prompt)]).content
 
@@ -303,10 +323,16 @@ def abstain_node(state: Dict[str, Any]) -> Dict[str, Any]:
 def memory_write_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Persist the current turn to session memory (side-effect node).
 
-    Always returns an empty dict — memory write is a side-effect, not a
-    state mutation.  timed_node records the latency for observability.
+    Writes to the legacy grounded-only sessions collection AND triggers an
+    async rolling summary update.  Always returns an empty dict.
     """
     _memory_write(state)
+    # Update rolling session summary (non-critical — any failure is swallowed).
+    update_session_summary(
+        session_id=state['session_id'],
+        user_input=state['user_input'],
+        assistant_reply=state.get('validated_output', ''),
+    )
     return {}
 
 
@@ -329,6 +355,8 @@ def finalize_node(state: Dict[str, Any], session_id: str) -> Dict[str, Any]:
             'relevance_score': state.get('relevance_score', 0.0),
             'groundedness_score': state.get('groundedness_score', 0.0),
             'revision_count': state.get('revision_count', 0),
+            'recent_messages_count': state.get('recent_messages_count', 0),
+            'has_session_summary': bool(state.get('session_summary')),
         },
     }
 
@@ -396,25 +424,28 @@ def _build_prompt_for_state(state: Dict[str, Any]) -> tuple[Any, str]:
     external_context = external_context_to_text(state.get('external_results', []))
 
     if intent == 'QA':
+        conv_history = build_conversation_context(state.get('recent_messages') or [], state.get('session_summary', '')) or state.get('memory_context', '')
         prompt = PROMPTS.render('qa', {
             'question': question,
             'context': context,
             'external_context': external_context,
-            'conversation_history': state.get('memory_context', ''),
+            'conversation_history': conv_history,
         })
         return general_llm(), prompt
-    elif intent == 'SQL':
-        prompt = PROMPTS.render('sql', {'question': question, 'context': context})
+
+    conv_history = build_conversation_context(state.get('recent_messages') or [], state.get('session_summary', '')) or state.get('memory_context', '')
+    if intent == 'SQL':
+        prompt = PROMPTS.render('sql', {'question': question, 'context': context, 'conversation_history': conv_history})
         return general_llm(), prompt
     elif intent == 'MONGO':
-        prompt = PROMPTS.render('mongo', {'question': question, 'context': context})
+        prompt = PROMPTS.render('mongo', {'question': question, 'context': context, 'conversation_history': conv_history})
         return general_llm(), prompt
     elif intent == 'CODE' and domain == 'java':
-        prompt = PROMPTS.render('code_java', {'question': question, 'context': context, 'external_context': external_context})
+        prompt = PROMPTS.render('code_java', {'question': question, 'context': context, 'external_context': external_context, 'conversation_history': conv_history})
         return code_llm(), prompt
     else:
         prompt_name = _CODE_PROMPT_MAP.get(domain or '', 'code_python')
-        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'external_context': external_context})
+        prompt = PROMPTS.render(prompt_name, {'question': question, 'context': context, 'external_context': external_context, 'conversation_history': conv_history})
         return code_llm(), prompt
 
 
