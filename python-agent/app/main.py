@@ -15,6 +15,7 @@ from .store import (
     ensure_indexes, save_execution, seed_sample_documents,
     chunks_collection, book_chunks_collection, executions_collection,
     get_health_detail,
+    save_chat_message, load_recent_messages, clear_session_messages,
 )
 from .evals.runner import run_all_evals
 from .evals.reporting import list_report_files
@@ -121,6 +122,9 @@ def chat(request: ChatRequest, x_correlation_id: str | None = Header(default=Non
     except PromptInjectionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
+    # Persist the user turn before execution so even failed runs have a record.
+    save_chat_message(session_id=request.sessionId, role="user", content=sanitized_message)
+
     result = run_agent_with_trace(
         session_id=request.sessionId,
         user_input=sanitized_message,
@@ -148,6 +152,27 @@ def chat(request: ChatRequest, x_correlation_id: str | None = Header(default=Non
     })
 
     meta = result.get("run_metadata", {})
+
+    # Persist the assistant turn with rich metadata for downstream memory queries.
+    save_chat_message(
+        session_id=request.sessionId,
+        role="assistant",
+        content=answer,
+        metadata={
+            "intent": intent,
+            "domain": domain,
+            "prompt_name": meta.get("prompt_name"),
+            "prompt_version": meta.get("prompt_version"),
+            "model_name": meta.get("model_name"),
+            "retrieved_doc_count": meta.get("retrieved_doc_count", 0),
+            "external_result_count": meta.get("external_result_count", 0),
+            "grounded": result.get("grounded", False),
+            "abstain": meta.get("abstain", False),
+            "warnings": warnings,
+        },
+        run_id=execution_id,
+    )
+
     return ChatResponse(
         executionId=execution_id,
         intent=intent,
@@ -179,6 +204,9 @@ async def chat_stream(request: ChatRequest, x_correlation_id: str | None = Heade
 
     cid = x_correlation_id or secrets.token_hex(8)
     log.info("[%s] POST /agent/chat/stream sessionId=%s", cid, request.sessionId)
+
+    # Save user turn before streaming starts.
+    save_chat_message(session_id=request.sessionId, role="user", content=sanitized_message)
 
     def generator():
         meta_sent = False
@@ -218,10 +246,11 @@ async def chat_stream(request: ChatRequest, x_correlation_id: str | None = Heade
                     warnings = state.get("warnings", [])
                     citations = state.get("citations", [])
                     run_meta = state.get("run_metadata", {})
+                    domain = state.get("domain")
                     execution_id = save_execution({
                         "sessionId": request.sessionId,
                         "intent": intent,
-                        "domain": state.get("domain"),
+                        "domain": domain,
                         "answer": answer,
                         "format": fmt,
                         "language": language,
@@ -230,6 +259,25 @@ async def chat_stream(request: ChatRequest, x_correlation_id: str | None = Heade
                         "grounded": state.get("grounded", False),
                         "trace": state.get("trace", []),
                     })
+                    # Persist the assistant turn after streaming completes.
+                    save_chat_message(
+                        session_id=request.sessionId,
+                        role="assistant",
+                        content=answer,
+                        metadata={
+                            "intent": intent,
+                            "domain": domain,
+                            "prompt_name": run_meta.get("prompt_name"),
+                            "prompt_version": run_meta.get("prompt_version"),
+                            "model_name": run_meta.get("model_name"),
+                            "retrieved_doc_count": run_meta.get("retrieved_doc_count", 0),
+                            "external_result_count": run_meta.get("external_result_count", 0),
+                            "grounded": state.get("grounded", False),
+                            "abstain": run_meta.get("abstain", False),
+                            "warnings": warnings,
+                        },
+                        run_id=execution_id,
+                    )
                     yield json.dumps({
                         "type": "done",
                         "executionId": execution_id,

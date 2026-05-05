@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Keyword sets per domain used for sub-domain detection.
@@ -102,6 +102,70 @@ def _looks_like_code_request(text: str) -> bool:
     return text.startswith("how do i code") or text.startswith("how to code")
 
 
+# Referential phrases that signal a follow-up without new explicit intent markers.
+_FOLLOWUP_MARKERS: List[str] = [
+    " it ", " it.", " it?", "that ", "the result", "the output", "the code",
+    "the query", "the function", "the script", "the example", "the snippet",
+    "convert it", "rewrite it", "translate it", "now do", "do the same",
+    "same but", "same thing", "change it", "make it", "turn it",
+]
+
+
+def _is_likely_followup(text: str, detected_intent: str) -> bool:
+    """Return True when the message looks like a contextual follow-up.
+
+    Criteria: the message is short (≤ 12 tokens) OR contains referential
+    follow-up markers, AND the detected intent is the weak default QA.
+    We only override a weak QA detection, not MONGO/SQL/CODE that was
+    already explicitly detected.
+    """
+    if detected_intent != "QA":
+        return False
+    padded = f" {text} "
+    has_marker = any(m in padded for m in _FOLLOWUP_MARKERS)
+    is_short = len(text.split()) <= 12
+    return has_marker or is_short
+
+
+# Maps metadata domain strings stored in assistant messages back to intent.
+_DOMAIN_TO_INTENT: Dict[str, str] = {
+    "sql": "SQL",
+    "mongodb": "MONGO",
+    "java": "CODE",
+    "python": "CODE",
+    "deep_learning": "CODE",
+    "data_science": "CODE",
+    "algorithms": "CODE",
+    "security": "CODE",
+    "finance": "CODE",
+    "code": "CODE",
+}
+
+
+def _infer_prior_intent_from_history(
+    recent_messages: List[Dict[str, str]]
+) -> tuple:
+    """Return (intent, domain) from the most recent assistant turn, or (None, None)."""
+    for msg in reversed(recent_messages):
+        if msg.get("role") == "assistant":
+            # Prefer explicit intent/domain stored directly on the message.
+            meta_intent = msg.get("intent")
+            meta_domain = msg.get("domain")
+            # Also check nested metadata dict (populated from assistant saves in main.py).
+            if not meta_intent and isinstance(msg.get("metadata"), dict):
+                meta_intent = msg["metadata"].get("intent")
+                meta_domain = msg["metadata"].get("domain") or meta_domain
+            if meta_intent:
+                return meta_intent, meta_domain
+            # Fallback: infer from content keywords in the assistant's last reply.
+            content = msg.get("content", "").lower()
+            for domain, intent in _DOMAIN_TO_INTENT.items():
+                if domain in content:
+                    return intent, domain
+    return None, None
+
+
+
 def _intent_confidence(text: str, intent: str, domain: str) -> float:
     """Estimate classification confidence from signal strength.
 
@@ -131,7 +195,7 @@ def _intent_confidence(text: str, intent: str, domain: str) -> float:
     return 0.60
 
 
-def classify_intent(message: str) -> Dict[str, Any]:
+def classify_intent(message: str, recent_messages: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     text = message.lower()
     intent = "QA"
     domain = "general"
@@ -148,6 +212,17 @@ def classify_intent(message: str) -> Dict[str, Any]:
     else:
         # QA — detect subject domain so the reranker can boost relevant book chunks
         domain = _detect_subject_domain(text)
+
+    # -----------------------------------------------------------------------
+    # Follow-up detection: if the query is short and referential (uses "it",
+    # "that", "the result", etc.) without strong explicit signals, inherit the
+    # prior intent and domain from the most recent assistant turn.
+    # -----------------------------------------------------------------------
+    if recent_messages:
+        prior_intent, prior_domain = _infer_prior_intent_from_history(recent_messages)
+        if prior_intent and _is_likely_followup(text, intent):
+            intent = prior_intent
+            domain = prior_domain or domain
 
     confidence = _intent_confidence(text, intent, domain)
     # Flag as ambiguous when the model is less certain — callers can choose to

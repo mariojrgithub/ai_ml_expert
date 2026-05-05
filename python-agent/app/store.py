@@ -34,6 +34,10 @@ def sessions_collection() -> Collection:
     return db["sessions"]
 
 
+def chat_messages_collection() -> Collection:
+    return db["chat_messages"]
+
+
 def ensure_indexes() -> None:
     documents_collection().create_index([("title", TEXT), ("content", TEXT), ("domain", TEXT)])
     chunks_collection().create_index([("title", TEXT), ("text", TEXT), ("domain", TEXT)])
@@ -48,6 +52,22 @@ def ensure_indexes() -> None:
     # Sessions: unique by session_id + TTL expiry index for automatic cleanup.
     sessions_collection().create_index('session_id', unique=True, name='session_id_idx')
     sessions_collection().create_index('ttl_expires', expireAfterSeconds=0, name='session_ttl_idx')
+    # Chat messages: primary lookup is (session_id, created_at) for ordered history.
+    chat_messages_collection().create_index(
+        [("session_id", 1), ("created_at", 1)],
+        name="chat_msg_session_ts_idx",
+    )
+    chat_messages_collection().create_index(
+        "created_at",
+        name="chat_msg_ts_idx",
+    )
+    # Session summaries: unique per session_id, updated_at for TTL if desired.
+    chat_session_summaries_collection().create_index(
+        "session_id", unique=True, name="chat_summary_session_idx"
+    )
+    chat_session_summaries_collection().create_index(
+        "updated_at", name="chat_summary_updated_idx"
+    )
 
 
 def seed_sample_documents() -> int:
@@ -172,6 +192,112 @@ def load_session_turns(session_id: str) -> List[Dict[str, Any]]:
     if doc is None:
         return []
     return doc.get("turns", [])
+
+
+# ---------------------------------------------------------------------------
+# Chat message storage — individual role-based messages per turn.
+# Stored unconditionally (unlike session turns which require grounded=True).
+# ---------------------------------------------------------------------------
+
+def save_chat_message(
+    session_id: str,
+    role: str,
+    content: str,
+    user_id: str | None = None,
+    metadata: Dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> str:
+    """Insert a single chat message and return its inserted_id as a string.
+
+    Parameters
+    ----------
+    session_id : str   The session this message belongs to.
+    role       : str   ``"user"`` or ``"assistant"``.
+    content    : str   The message text.
+    user_id    : str | None   Optional user identifier.
+    metadata   : dict | None  Optional extra fields (intent, model, etc.).
+    run_id     : str | None   Optional execution / run identifier.
+    """
+    doc: Dict[str, Any] = {
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "created_at": datetime.now(timezone.utc),
+    }
+    if user_id is not None:
+        doc["user_id"] = user_id
+    if metadata:
+        doc["metadata"] = metadata
+    if run_id is not None:
+        doc["run_id"] = run_id
+    result = chat_messages_collection().insert_one(doc)
+    return str(result.inserted_id)
+
+
+def load_recent_messages(session_id: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Return up to *limit* most recent messages for *session_id*, oldest-first.
+
+    Each dict contains at least ``role``, ``content``, and ``created_at``.
+    Returns an empty list when no messages exist for the session.
+    """
+    cursor = (
+        chat_messages_collection()
+        .find({"session_id": session_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1, "metadata": 1})
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    # Reverse so oldest message comes first (natural reading order).
+    return list(reversed(list(cursor)))
+
+
+def clear_session_messages(session_id: str) -> int:
+    """Delete all chat messages for *session_id*.  Returns the deleted count.
+
+    Intended for tests and session-reset flows — not exposed as a public API
+    endpoint by default.
+    """
+    result = chat_messages_collection().delete_many({"session_id": session_id})
+    return result.deleted_count
+
+
+# ---------------------------------------------------------------------------
+# Session summary storage — rolling compact summaries per session (Chunk 9).
+# ---------------------------------------------------------------------------
+
+def chat_session_summaries_collection() -> Collection:
+    return db["chat_session_summaries"]
+
+
+def load_session_summary(session_id: str) -> str:
+    """Return the latest rolling summary text for *session_id*, or ''.
+
+    Returns an empty string when no summary exists yet.
+    """
+    doc = chat_session_summaries_collection().find_one(
+        {"session_id": session_id},
+        {"_id": 0, "summary": 1},
+    )
+    if doc:
+        return doc.get("summary", "")
+    return ""
+
+
+def upsert_session_summary(session_id: str, summary: str) -> None:
+    """Create or replace the rolling summary for *session_id*."""
+    chat_session_summaries_collection().update_one(
+        {"session_id": session_id},
+        {
+            "$set": {
+                "summary": summary,
+                "updated_at": datetime.now(timezone.utc),
+            },
+            "$setOnInsert": {
+                "session_id": session_id,
+                "created_at": datetime.now(timezone.utc),
+            },
+        },
+        upsert=True,
+    )
 
 
 def get_health_detail() -> Dict[str, Any]:

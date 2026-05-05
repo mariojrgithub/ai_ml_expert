@@ -23,5 +23,11 @@ class Settings(BaseSettings):
     max_revision_attempts: int = 2
     # Session memory
     session_memory_ttl_minutes: int = 30
+    # Chat history (durable per-session message log)
+    chat_history_enabled: bool = True
+    chat_history_recent_limit: int = 10    # max messages loaded into context window
+    chat_history_max_chars: int = 3000     # max chars of formatted conversation history
+    # Rolling session summary
+    chat_summary_enabled: bool = True
 
 settings = Settings()

@@ -207,5 +207,39 @@
     ],
     "requires_grounding": false,
     "expected_abstain": true
+  },
+  {
+    "id": "multiturn-python-001",
+    "task_type": "CODE",
+    "multi_turn": true,
+    "turns": [
+      {
+        "input": "Write a Python function to compute the factorial of a number.",
+        "required_keywords": ["def", "factorial"],
+        "forbidden_keywords": ["DROP TABLE", "$where"]
+      },
+      {
+        "input": "Now add memoization to it.",
+        "required_keywords": ["def", "factorial"],
+        "forbidden_keywords": ["DROP TABLE"]
+      }
+    ]
+  },
+  {
+    "id": "multiturn-sql-001",
+    "task_type": "SQL",
+    "multi_turn": true,
+    "turns": [
+      {
+        "input": "Write a SQL query to select all users ordered by name.",
+        "required_keywords": ["select", "order by"],
+        "forbidden_keywords": ["delete", "drop"]
+      },
+      {
+        "input": "Now filter that to users created in the last 30 days.",
+        "required_keywords": ["select", "where"],
+        "forbidden_keywords": ["delete", "drop"]
+      }
+    ]
   }
 ]
